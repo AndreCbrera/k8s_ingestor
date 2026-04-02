@@ -474,13 +474,20 @@ helm install k8s-ingestor ./charts/k8s-ingestor \
 
 ```
 .
-├── main.go                          # Entry point
+├── main.go                          # K8s Ingestor entry point
+├── cmd/
+│   ├── query-service/              # Log query microservice
+│   └── pipeline-service/            # Pipeline config microservice
 ├── internal/
 │   ├── config/config.go              # Configuration management
-│   ├── handler/handler.go           # HTTP handlers
-│   ├── clickhouse/client.go          # ClickHouse client
+│   ├── handler/handler.go             # HTTP handlers
+│   ├── clickhouse/client.go           # ClickHouse client
+│   ├── query/handler.go              # Query service handlers
+│   ├── pipeline/handler.go           # Pipeline config handlers
 │   ├── masker/masker.go             # Data masking
 │   └── tracing/tracing.go           # OpenTelemetry tracing
+├── web/
+│   └── pipeline/                      # Pipeline web UI
 ├── schema/
 │   └── optimized_schema.sql          # ClickHouse DDL
 ├── fluentbit_conf/
@@ -638,6 +645,96 @@ GROUP BY cluster, namespace, container;
 
 # Restore backup
 ./scripts/backup.sh --restore backup-2024-01-01.tar.gz
+```
+
+---
+
+## Microservicios
+
+### Query Service
+
+Microservicio para consultar logs de ClickHouse.
+
+```bash
+# Build
+go build -o query-service ./cmd/query-service
+
+# Run
+./query-service
+```
+
+**Endpoints:**
+
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `GET /logs` | Query | Consultar logs con filtros |
+| `GET /logs/stats` | Query | Estadísticas agregadas |
+| `GET /logs/namespaces` | Query | Lista de namespaces |
+| `GET /logs/pods` | Query | Lista de pods |
+| `GET /logs/stream` | GET | Streaming de logs (NDJSON) |
+| `GET /health` | GET | Health check |
+
+**Parámetros de Query:**
+
+```
+?namespace=production
+&pod=api-server
+&container=api
+&level=error
+&cluster=prod
+&search=error+message
+&start=2024-01-01T00:00:00Z
+&end=2024-01-02T00:00:00Z
+&limit=100
+&offset=0
+&order_by=timestamp
+&desc=true
+```
+
+**Ejemplo:**
+```bash
+curl "http://localhost:8081/logs?namespace=production&level=error&limit=10"
+```
+
+### Pipeline Service
+
+Microservicio para configurar pipelines de log con UI web.
+
+```bash
+# Build
+go build -o pipeline-service ./cmd/pipeline-service
+
+# Run
+./pipeline-service
+```
+
+**Endpoints:**
+
+| Endpoint | Método | Descripción |
+|----------|--------|-------------|
+| `GET /api/pipelines` | GET | Listar pipelines |
+| `POST /api/pipelines/create` | POST | Crear pipeline |
+| `POST /api/pipelines/update?id=<id>` | POST | Actualizar pipeline |
+| `POST /api/pipelines/delete?id=<id>` | POST | Eliminar pipeline |
+| `GET /api/pipelines/config` | GET | Generar config Fluent Bit |
+| `GET /health` | GET | Health check |
+
+**UI Web:** `http://localhost:8082/`
+
+**Pipeline Schema:**
+```json
+{
+  "name": "Production Logs",
+  "description": "Logs de producción",
+  "enabled": true,
+  "namespaces": [
+    {"name": "production", "include": true},
+    {"name": "api", "include": true}
+  ],
+  "levels": ["error", "warn", "info"],
+  "pods": [],
+  "labels": []
+}
 ```
 
 ---
