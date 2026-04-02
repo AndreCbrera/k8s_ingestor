@@ -168,8 +168,10 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/logs", withAuth(withRateLimit(h.HandleLogs)))
+	mux.HandleFunc("/get-logs", h.HandleGetLogs)
 	mux.HandleFunc("/health", h.HandleHealth)
 	mux.HandleFunc("/dlq", h.HandleDLQ)
+	mux.HandleFunc("/query", h.HandleQuery)
 	mux.Handle("/metrics", promhttp.Handler())
 
 	srv := &http.Server{

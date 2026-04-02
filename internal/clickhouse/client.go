@@ -91,6 +91,21 @@ func (c *Client) IsHealthy() bool {
 	return c.healthy
 }
 
+func (c *Client) Query(ctx context.Context, sql string) (driver.Rows, error) {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return nil, fmt.Errorf("connection is nil")
+	}
+
+	queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	return conn.Query(queryCtx, sql)
+}
+
 func (c *Client) InsertBatch(ctx context.Context, logs []LogEntry) error {
 	c.mu.RLock()
 	conn := c.conn
@@ -296,7 +311,7 @@ type QueryOptions struct {
 	Descending bool
 }
 
-func (c *Client) QueryLogs(ctx context.Context, opts QueryOptions) ([]LogEntry, int64, error) {
+func (c *Client) QueryLogs(ctx context.Context, opts QueryOptions) ([]LogEntry, uint64, error) {
 	c.mu.RLock()
 	conn := c.conn
 	c.mu.RUnlock()
@@ -326,8 +341,12 @@ func (c *Client) QueryLogs(ctx context.Context, opts QueryOptions) ([]LogEntry, 
 		conditions = append(conditions, fmt.Sprintf("message LIKE '%%%s%%'", opts.Message))
 	}
 
-	conditions = append(conditions, fmt.Sprintf("timestamp >= '%s'", opts.StartTime.Format(time.RFC3339)))
-	conditions = append(conditions, fmt.Sprintf("timestamp <= '%s'", opts.EndTime.Format(time.RFC3339)))
+	if !opts.StartTime.IsZero() {
+		conditions = append(conditions, fmt.Sprintf("timestamp >= '%s'", opts.StartTime.Format("2006-01-02 15:04:05")))
+	}
+	if !opts.EndTime.IsZero() {
+		conditions = append(conditions, fmt.Sprintf("timestamp <= '%s'", opts.EndTime.Format("2006-01-02 15:04:05")))
+	}
 
 	whereClause := ""
 	if len(conditions) > 0 {
@@ -350,7 +369,7 @@ func (c *Client) QueryLogs(ctx context.Context, opts QueryOptions) ([]LogEntry, 
 	}
 
 	countQuery := fmt.Sprintf("SELECT count() FROM logs %s", whereClause)
-	var total int64
+	var total uint64
 	if err := conn.QueryRow(ctx, countQuery).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count query: %w", err)
 	}

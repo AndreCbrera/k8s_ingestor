@@ -3,647 +3,762 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Log Pipeline Dashboard</title>
+    <title>Onum | Data pipelines</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --bg-primary: #09090e;
+            --bg-secondary: #111118;
+            --bg-tertiary: #18181f;
+            --bg-elevated: #1e1e28;
+            --border-subtle: rgba(255,255,255,0.06);
+            --border-medium: rgba(255,255,255,0.1);
+            --text-primary: #f8fafc;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --purple: #a78bfa;
+            --purple-glow: rgba(167, 139, 250, 0.4);
+            --blue: #60a5fa;
+            --cyan: #22d3ee;
+            --pink: #f472b6;
+            --orange: #fb923c;
+            --green: #4ade80;
+            --red: #f87171;
+        }
+
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e27; color: #fff; min-height: 100vh; }
         
-        /* Animated background */
-        .bg-animation {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: -1;
-            overflow: hidden;
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            overflow-x: hidden;
         }
-        .bg-animation::before {
-            content: '';
-            position: absolute;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(ellipse at center, #1a1f4e 0%, transparent 70%);
-            animation: pulse 8s ease-in-out infinite;
+
+        /* === SIDEBAR === */
+        .sidebar {
+            width: 250px; min-height: 100vh;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border-subtle);
+            padding: 20px 14px;
+            display: flex; flex-direction: column;
+            position: fixed; left: 0; top: 0; bottom: 0;
+            z-index: 100;
         }
-        @keyframes pulse {
-            0%, 100% { transform: scale(1); opacity: 0.5; }
-            50% { transform: scale(1.2); opacity: 0.8; }
+
+        .sidebar-brand {
+            display: flex; align-items: center; gap: 12px;
+            padding: 8px 14px; margin-bottom: 28px;
+        }
+        .brand-icon {
+            width: 36px; height: 36px;
+            background: linear-gradient(135deg, var(--purple), var(--blue));
+            border-radius: 10px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px; font-weight: 800; color: white;
+            box-shadow: 0 4px 20px var(--purple-glow);
+        }
+        .brand-name { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+
+        .search-box {
+            display: flex; align-items: center; gap: 10px;
+            padding: 11px 14px; margin-bottom: 24px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-subtle);
+            border-radius: 10px;
+            color: var(--text-muted); font-size: 13px;
+            cursor: pointer; transition: all 0.2s;
+        }
+        .search-box:hover { border-color: var(--border-medium); background: var(--bg-elevated); }
+        .search-box kbd { 
+            margin-left: auto; padding: 3px 8px; 
+            background: var(--bg-primary); border: 1px solid var(--border-subtle);
+            border-radius: 5px; font-size: 11px; font-family: inherit;
+        }
+
+        .nav-group { margin-bottom: 28px; }
+        .nav-label { 
+            font-size: 10px; font-weight: 600; color: var(--text-muted); 
+            padding: 8px 14px; text-transform: uppercase; letter-spacing: 1px;
         }
         
-        /* Grid lines animation */
-        .grid-bg {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-image: 
-                linear-gradient(rgba(26, 115, 232, 0.03) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(26, 115, 232, 0.03) 1px, transparent 1px);
-            background-size: 50px 50px;
-            z-index: -1;
+        .nav-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 11px 14px; border-radius: 10px;
+            color: var(--text-secondary); font-size: 14px; font-weight: 500;
+            cursor: pointer; transition: all 0.15s ease;
+            position: relative;
         }
-        
-        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
-        
+        .nav-item:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+        .nav-item.active { 
+            background: linear-gradient(135deg, rgba(167,139,250,0.15), rgba(96,165,250,0.1)); 
+            color: var(--purple);
+        }
+        .nav-item.active::before {
+            content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+            width: 3px; height: 20px; background: var(--purple); border-radius: 0 3px 3px 0;
+        }
+        .nav-icon { width: 20px; height: 20px; opacity: 0.7; }
+        .nav-item:hover .nav-icon, .nav-item.active .nav-icon { opacity: 1; }
+        .nav-badge { 
+            margin-left: auto; padding: 3px 10px; 
+            background: var(--purple); border-radius: 12px;
+            font-size: 11px; font-weight: 600; color: white;
+        }
+
+        .sidebar-footer {
+            margin-top: auto; padding: 16px 14px;
+            border-top: 1px solid var(--border-subtle);
+        }
+        .user-info { display: flex; align-items: center; gap: 12px; }
+        .user-avatar {
+            width: 36px; height: 36px; border-radius: 10px;
+            background: linear-gradient(135deg, var(--cyan), var(--green));
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px; font-weight: 600;
+        }
+        .user-name { font-size: 13px; font-weight: 600; }
+        .user-role { font-size: 11px; color: var(--text-muted); }
+
+        /* === MAIN CONTENT === */
+        .main { 
+            flex: 1; margin-left: 250px; 
+            display: flex; flex-direction: column; 
+            min-height: 100vh;
+        }
+
         /* Header */
-        header { text-align: center; padding: 30px 0; }
-        header h1 { font-size: 28px; font-weight: 300; margin-bottom: 8px; background: linear-gradient(90deg, #00d4ff, #7c3aed); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        header p { color: #64748b; font-size: 14px; }
-        
-        /* Data Flow Animation */
-        .data-flow {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 30px 0;
-            position: relative;
-            margin: 30px 0;
+        .topbar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 16px 32px;
+            background: rgba(17, 17, 24, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border-subtle);
+            position: sticky; top: 0; z-index: 50;
         }
-        
-        .node {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            border: 1px solid rgba(26, 115, 232, 0.3);
-            border-radius: 16px;
-            padding: 20px;
+
+        .topbar-left { display: flex; align-items: center; gap: 20px; }
+        .page-title { font-size: 20px; font-weight: 700; }
+        .date-badge {
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 14px; background: var(--bg-tertiary);
+            border: 1px solid var(--border-subtle); border-radius: 8px;
+            font-size: 13px; color: var(--text-secondary);
+        }
+
+        .topbar-right { display: flex; align-items: center; gap: 12px; }
+        .btn {
+            display: flex; align-items: center; gap: 8px;
+            padding: 10px 18px; border-radius: 10px;
+            font-size: 13px; font-weight: 500;
+            cursor: pointer; transition: all 0.2s;
+            border: 1px solid var(--border-subtle);
+            background: var(--bg-tertiary); color: var(--text-secondary);
+        }
+        .btn:hover { background: var(--bg-elevated); color: var(--text-primary); border-color: var(--border-medium); }
+        .btn-primary { 
+            background: linear-gradient(135deg, var(--purple), var(--blue)); 
+            border: none; color: white;
+            box-shadow: 0 4px 15px var(--purple-glow);
+        }
+        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+
+        /* Content */
+        .content { padding: 28px 32px; flex: 1; }
+
+        /* Stats Section */
+        .stats-section { display: flex; gap: 24px; margin-bottom: 32px; }
+
+        .circular-card {
+            width: 200px; padding: 24px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-subtle);
+            border-radius: 20px;
+            display: flex; flex-direction: column; align-items: center;
+            position: relative; overflow: hidden;
+        }
+        .circular-card::before {
+            content: ''; position: absolute; top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background: conic-gradient(from 180deg, transparent, var(--purple-glow), transparent);
+            animation: rotate 8s linear infinite;
+            opacity: 0.1;
+        }
+        @keyframes rotate { to { transform: rotate(360deg); } }
+
+        .circular-progress {
+            position: relative; width: 120px; height: 120px; margin-bottom: 16px;
+        }
+        .circular-progress svg { transform: rotate(-90deg); }
+        .circular-progress circle { fill: none; stroke-linecap: round; }
+        .circular-bg { stroke: var(--border-subtle); stroke-width: 8; }
+        .circular-fill { 
+            stroke: url(#circularGrad); stroke-width: 8;
+            stroke-dasharray: 339.292; transition: stroke-dashoffset 1s ease;
+        }
+        .circular-center {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             text-align: center;
-            min-width: 160px;
-            position: relative;
-            transition: all 0.3s ease;
         }
-        .node:hover { border-color: #1a73e8; transform: translateY(-5px); box-shadow: 0 10px 40px rgba(26, 115, 232, 0.2); }
-        .node-icon { font-size: 32px; margin-bottom: 10px; }
-        .node-title { font-size: 14px; font-weight: 600; margin-bottom: 5px; }
-        .node-value { font-size: 24px; font-weight: 700; color: #00d4ff; }
-        .node-unit { font-size: 12px; color: #64748b; }
-        
-        .node.pods .node-value { color: #f472b6; }
-        .node.fluentbit .node-value { color: #fbbf24; }
-        .node.ingestor .node-value { color: #34d399; }
-        .node.clickhouse .node-value { color: #a78bfa; }
-        
-        /* Connection lines */
-        .connections {
-            position: absolute;
-            top: 50%;
-            left: 0;
-            width: 100%;
-            height: 2px;
-            z-index: -1;
+        .circular-percent { font-size: 32px; font-weight: 800; }
+        .circular-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+        .circular-saved { font-size: 14px; font-weight: 600; color: var(--green); margin-top: 8px; }
+
+        .metric-card {
+            flex: 1; padding: 24px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-subtle);
+            border-radius: 20px;
+            transition: all 0.3s;
         }
-        .connection-line {
-            position: absolute;
-            height: 2px;
-            background: linear-gradient(90deg, #1a73e8, transparent);
-            opacity: 0.3;
+        .metric-card:hover { border-color: var(--border-medium); transform: translateY(-2px); }
+        .metric-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+        .metric-icon {
+            width: 44px; height: 44px; border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 22px;
         }
-        
-        /* Animated particles */
-        .particle {
-            position: absolute;
-            width: 8px;
-            height: 8px;
-            background: #00d4ff;
-            border-radius: 50%;
-            box-shadow: 0 0 10px #00d4ff, 0 0 20px #00d4ff;
-            animation: flow 2s linear infinite;
+        .metric-icon.blue { background: rgba(96, 165, 250, 0.12); }
+        .metric-icon.orange { background: rgba(251, 146, 60, 0.12); }
+        .metric-icon.pink { background: rgba(244, 114, 182, 0.12); }
+        .metric-icon.cyan { background: rgba(34, 211, 238, 0.12); }
+        .metric-label { font-size: 13px; color: var(--text-muted); }
+        .metric-value { font-size: 28px; font-weight: 700; margin-bottom: 6px; }
+        .metric-change { font-size: 12px; display: flex; align-items: center; gap: 4px; }
+        .metric-change.down { color: var(--red); }
+        .metric-change.up { color: var(--green); }
+
+        /* Sankey Section */
+        .sankey-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-subtle);
+            border-radius: 20px; padding: 28px;
+            margin-bottom: 28px;
+            position: relative; overflow: hidden;
         }
-        @keyframes flow {
-            0% { transform: translateX(0) scale(1); opacity: 1; }
-            100% { transform: translateX(200px) scale(0.5); opacity: 0; }
+        .sankey-card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+            background: linear-gradient(90deg, transparent, var(--purple), transparent);
+            opacity: 0.5;
         }
-        
-        /* Stats cards */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
+
+        .sankey-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+        .sankey-title { font-size: 16px; font-weight: 600; }
+        .sankey-tabs { display: flex; gap: 6px; }
+        .tab {
+            display: flex; align-items: center; gap: 6px;
+            padding: 8px 14px; border-radius: 8px;
+            background: transparent; border: 1px solid var(--border-subtle);
+            color: var(--text-muted); font-size: 12px; font-weight: 500;
+            cursor: pointer; transition: all 0.2s;
         }
-        
-        .stat-card {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            border: 1px solid rgba(26, 115, 232, 0.2);
-            border-radius: 12px;
-            padding: 20px;
-            position: relative;
-            overflow: hidden;
+        .tab:hover { background: var(--bg-tertiary); color: var(--text-secondary); }
+        .tab.active { background: var(--bg-tertiary); border-color: var(--purple); color: var(--purple); }
+
+        .column-headers {
+            display: flex; justify-content: space-between;
+            padding: 0 40px; margin-bottom: 12px;
         }
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 3px;
-            background: linear-gradient(90deg, #1a73e8, #00d4ff);
+        .col-header { 
+            display: flex; align-items: center; gap: 8px;
+            font-size: 11px; font-weight: 600; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.5px;
         }
-        .stat-card.error::before { background: linear-gradient(90deg, #ef4444, #f87171); }
-        .stat-card.warning::before { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
-        .stat-card.success::before { background: linear-gradient(90deg, #10b981, #34d399); }
-        
-        .stat-label { font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-        .stat-value { font-size: 32px; font-weight: 700; }
-        .stat-change { font-size: 12px; margin-top: 8px; }
-        .stat-change.up { color: #34d399; }
-        .stat-change.down { color: #ef4444; }
-        
-        /* Live log stream */
-        .live-section {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            border: 1px solid rgba(26, 115, 232, 0.2);
+        .col-header svg { width: 14px; height: 14px; opacity: 0.6; }
+
+        .sankey-visual { 
+            position: relative; height: 420px;
+            background: linear-gradient(180deg, rgba(167,139,250,0.02), transparent);
             border-radius: 16px;
-            padding: 20px;
-            margin: 30px 0;
         }
-        .live-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        .live-header h2 { font-size: 18px; font-weight: 600; }
-        .live-badge { display: flex; align-items: center; gap: 8px; background: rgba(239, 68, 68, 0.2); padding: 6px 12px; border-radius: 20px; font-size: 12px; }
-        .live-dot { width: 8px; height: 8px; background: #ef4444; border-radius: 50%; animation: blink 1s infinite; }
-        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-        
-        .log-stream {
-            max-height: 400px;
-            overflow-y: auto;
-            font-family: 'Monaco', 'Menlo', monospace;
+        .sankey-svg { width: 100%; height: 100%; }
+
+        /* Animated particles container */
+        .particles-container {
+            position: absolute; inset: 0; pointer-events: none; overflow: hidden;
+        }
+
+        .flow-particle {
+            position: absolute; width: 6px; height: 6px;
+            background: var(--purple); border-radius: 50%;
+            box-shadow: 0 0 10px var(--purple), 0 0 20px var(--purple-glow);
+            animation: flowParticle 4s ease-in-out infinite;
+        }
+
+        @keyframes flowParticle {
+            0% { left: 5%; top: var(--start-y); opacity: 0; transform: scale(0.5); }
+            10% { opacity: 1; transform: scale(1); }
+            90% { opacity: 1; transform: scale(1); }
+            100% { left: 95%; top: var(--end-y); opacity: 0; transform: scale(0.5); }
+        }
+
+        /* Logs Section */
+        .logs-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-subtle);
+            border-radius: 20px; padding: 24px;
+        }
+
+        .logs-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .logs-title { font-size: 16px; font-weight: 600; }
+        .live-tag {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 14px; border-radius: 20px;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            font-size: 11px; font-weight: 600; color: var(--red);
+        }
+        .live-pulse { width: 8px; height: 8px; background: var(--red); border-radius: 50%; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); } 50% { box-shadow: 0 0 0 6px rgba(239,68,68,0); } }
+
+        .logs-table { 
+            font-family: 'JetBrains Mono', 'Fira Code', monospace; 
             font-size: 12px;
-            line-height: 1.8;
         }
-        .log-entry {
-            padding: 8px 12px;
-            border-radius: 6px;
-            margin-bottom: 4px;
-            background: rgba(0, 0, 0, 0.3);
-            display: flex;
-            gap: 12px;
+        .logs-header-row {
+            display: grid; grid-template-columns: 100px 60px 100px 1fr;
+            gap: 16px; padding: 10px 16px;
+            border-bottom: 1px solid var(--border-subtle);
+            color: var(--text-muted); font-size: 11px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .logs-body { max-height: 300px; overflow-y: auto; }
+        .logs-body::-webkit-scrollbar { width: 6px; }
+        .logs-body::-webkit-scrollbar-track { background: transparent; }
+        .logs-body::-webkit-scrollbar-thumb { background: var(--border-medium); border-radius: 3px; }
+
+        .log-row {
+            display: grid; grid-template-columns: 100px 60px 100px 1fr;
+            gap: 16px; align-items: center;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-subtle);
+            transition: background 0.15s;
             animation: slideIn 0.3s ease;
         }
-        @keyframes slideIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
-        .log-time { color: #64748b; white-space: nowrap; }
-        .log-level { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
-        .log-level.error { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        .log-level.warn { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
-        .log-level.info { background: rgba(59, 130, 246, 0.2); color: #3b82f6; }
-        .log-level.debug { background: rgba(107, 114, 128, 0.2); color: #9ca3af; }
-        .log-msg { color: #e2e8f0; flex: 1; }
-        .log-ns { color: #a78bfa; font-size: 11px; }
-        
-        /* Charts */
-        .charts-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
+        .log-row:hover { background: var(--bg-tertiary); }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+
+        .log-ts { color: var(--text-muted); }
+        .log-lvl { 
+            padding: 4px 10px; border-radius: 6px; 
+            font-size: 10px; font-weight: 600; text-transform: uppercase;
+            text-align: center;
         }
-        .chart-card {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            border: 1px solid rgba(26, 115, 232, 0.2);
-            border-radius: 16px;
-            padding: 20px;
-        }
-        .chart-card h3 { font-size: 14px; color: #94a3b8; margin-bottom: 15px; }
-        .chart { height: 150px; display: flex; align-items: flex-end; gap: 4px; }
-        .chart-bar {
-            flex: 1;
-            background: linear-gradient(to top, #1a73e8, #00d4ff);
-            border-radius: 4px 4px 0 0;
-            min-height: 4px;
-            transition: height 0.5s ease;
-            position: relative;
-        }
-        .chart-bar:hover { background: linear-gradient(to top, #1557b0, #00a8cc); }
-        .chart-bar::after {
-            content: attr(data-value);
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            transform: translateX(-50%);
-            font-size: 10px;
-            color: #64748b;
-            opacity: 0;
-            transition: opacity 0.2s;
-        }
-        .chart-bar:hover::after { opacity: 1; }
-        
-        /* Pipeline cards */
-        .pipelines-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 16px;
-            margin: 30px 0;
-        }
-        .pipeline-card {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            border: 1px solid rgba(26, 115, 232, 0.2);
-            border-radius: 12px;
-            padding: 16px;
-            border-left: 4px solid #1a73e8;
-            transition: all 0.3s ease;
-        }
-        .pipeline-card.disabled { opacity: 0.5; border-left-color: #64748b; }
-        .pipeline-card:hover { border-color: #1a73e8; transform: translateX(5px); }
-        .pipeline-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-        .pipeline-name { font-weight: 600; }
-        .pipeline-badge { font-size: 10px; padding: 4px 8px; border-radius: 4px; }
-        .pipeline-badge.active { background: rgba(16, 185, 129, 0.2); color: #34d399; }
-        .pipeline-badge.inactive { background: rgba(100, 116, 139, 0.2); color: #94a3b8; }
-        .pipeline-namespaces { display: flex; flex-wrap: wrap; gap: 6px; }
-        .ns-tag { background: rgba(167, 139, 250, 0.2); color: #a78bfa; padding: 4px 8px; border-radius: 4px; font-size: 11px; }
-        
-        /* Flow animation */
-        .flow-line {
-            position: relative;
-            flex: 1;
-            height: 2px;
-            background: rgba(26, 115, 232, 0.2);
-            margin: 0 20px;
-        }
-        .flow-particle {
-            position: absolute;
-            width: 6px;
-            height: 6px;
-            background: #00d4ff;
-            border-radius: 50%;
-            top: -2px;
-            box-shadow: 0 0 10px #00d4ff;
-            animation: flowAcross 1.5s linear infinite;
-        }
-        @keyframes flowAcross {
-            0% { left: 0; opacity: 0; }
-            10% { opacity: 1; }
-            90% { opacity: 1; }
-            100% { left: 100%; opacity: 0; }
-        }
-        
+        .log-lvl.error { background: rgba(248,113,113,0.15); color: var(--red); }
+        .log-lvl.warn { background: rgba(251,146,60,0.15); color: var(--orange); }
+        .log-lvl.info { background: rgba(96,165,250,0.15); color: var(--blue); }
+        .log-lvl.debug { background: rgba(113,113,122,0.15); color: var(--text-muted); }
+        .log-ns { color: var(--purple); }
+        .log-msg { color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
         /* Footer */
-        footer { text-align: center; padding: 30px; color: #64748b; font-size: 12px; }
-        
-        /* Responsive */
-        @media (max-width: 768px) {
-            .data-flow { flex-direction: column; gap: 20px; }
-            .flow-line { width: 2px; height: 30px; margin: 10px 0; }
-            .flow-particle { animation-name: flowDown; }
-            @keyframes flowDown { 0% { top: 0; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { top: 100%; opacity: 0; } }
+        .footer {
+            padding: 20px 32px;
+            border-top: 1px solid var(--border-subtle);
+            text-align: center;
+            color: var(--text-muted); font-size: 12px;
         }
+
+        /* SVG Definitions */
+        .svg-defs { position: absolute; width: 0; height: 0; }
     </style>
 </head>
 <body>
-    <div class="bg-animation"></div>
-    <div class="grid-bg"></div>
-    
-    <div class="container">
-        <header>
-            <h1>Log Pipeline Dashboard</h1>
-            <p>Real-time monitoring of your Kubernetes log pipeline</p>
+    <svg class="svg-defs">
+        <defs>
+            <linearGradient id="circularGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#a78bfa"/>
+                <stop offset="50%" stop-color="#60a5fa"/>
+                <stop offset="100%" stop-color="#22d3ee"/>
+            </linearGradient>
+            <linearGradient id="flowGrad1" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.6"/>
+                <stop offset="100%" stop-color="#a78bfa" stop-opacity="0.6"/>
+            </linearGradient>
+            <linearGradient id="flowGrad2" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.5"/>
+                <stop offset="100%" stop-color="#f472b6" stop-opacity="0.5"/>
+            </linearGradient>
+            <linearGradient id="flowGrad3" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.4"/>
+                <stop offset="100%" stop-color="#4ade80" stop-opacity="0.4"/>
+            </linearGradient>
+            <filter id="glow">
+                <feGaussianBlur stdDeviation="4" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+        </defs>
+    </svg>
+
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <div class="brand-icon">O</div>
+            <span class="brand-name">Onum</span>
+        </div>
+
+        <div class="search-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            Search
+            <kbd>⌘K</kbd>
+        </div>
+
+        <nav class="nav-group">
+            <div class="nav-label">Main</div>
+            <div class="nav-item active">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>
+                Home
+            </div>
+            <div class="nav-item">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="3"/></svg>
+                Listeners
+            </div>
+            <div class="nav-item">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                Pipelines
+            </div>
+            <div class="nav-item">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                Data sinks
+            </div>
+            <div class="nav-item">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                Actions
+                <span class="nav-badge">9</span>
+            </div>
+        </nav>
+
+        <nav class="nav-group">
+            <div class="nav-label">Monitor</div>
+            <div class="nav-item">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                Alerts
+            </div>
+            <div class="nav-item">
+                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                Enrichment
+            </div>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <div class="user-avatar">DA</div>
+                <div>
+                    <div class="user-name">Data Admin</div>
+                    <div class="user-role">Administrator</div>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <main class="main">
+        <header class="topbar">
+            <div class="topbar-left">
+                <h1 class="page-title">Home</h1>
+                <div class="date-badge">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                    Range is 12 hours ago
+                </div>
+            </div>
+            <div class="topbar-right">
+                <button class="btn">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                    Search
+                </button>
+                <button class="btn" style="color: var(--cyan); border-color: var(--cyan);">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-6.219-8.56"/><path d="M21 3v5h-5"/></svg>
+                    Charlotte AI
+                </button>
+                <button class="btn btn-primary" onclick="fetchData()">Create new</button>
+            </div>
         </header>
-        
-        <!-- Data Flow Animation -->
-        <div class="data-flow">
-            <div class="node pods">
-                <div class="node-icon">📦</div>
-                <div class="node-title">Pods</div>
-                <div class="node-value" id="pods-count">0</div>
-                <div class="node-unit">containers</div>
-            </div>
-            
-            <div class="flow-line">
-                <div class="flow-particle"></div>
-                <div class="flow-particle" style="animation-delay: 0.5s;"></div>
-                <div class="flow-particle" style="animation-delay: 1s;"></div>
-            </div>
-            
-            <div class="node fluentbit">
-                <div class="node-icon">🔄</div>
-                <div class="node-title">Fluent Bit</div>
-                <div class="node-value" id="fb-rate">0</div>
-                <div class="node-unit">logs/sec</div>
-            </div>
-            
-            <div class="flow-line">
-                <div class="flow-particle" style="animation-delay: 0.3s;"></div>
-                <div class="flow-particle" style="animation-delay: 0.8s;"></div>
-            </div>
-            
-            <div class="node ingestor">
-                <div class="node-icon">⚡</div>
-                <div class="node-title">Ingestor</div>
-                <div class="node-value" id="ingestor-rate">0</div>
-                <div class="node-unit">logs/sec</div>
-            </div>
-            
-            <div class="flow-line">
-                <div class="flow-particle" style="animation-delay: 0.6s;"></div>
-                <div class="flow-particle" style="animation-delay: 1.1s;"></div>
-            </div>
-            
-            <div class="node clickhouse">
-                <div class="node-icon">💾</div>
-                <div class="node-title">ClickHouse</div>
-                <div class="node-value" id="ch-rate">0</div>
-                <div class="node-unit">logs/sec</div>
-            </div>
-        </div>
-        
-        <!-- Stats -->
-        <div class="stats-grid">
-            <div class="stat-card success">
-                <div class="stat-label">Total Logs Today</div>
-                <div class="stat-value" id="total-logs">0</div>
-                <div class="stat-change up" id="logs-change">↑ 12% from yesterday</div>
-            </div>
-            <div class="stat-card warning">
-                <div class="stat-label">Errors (Last Hour)</div>
-                <div class="stat-value" id="error-count">0</div>
-                <div class="stat-change down" id="error-change">↓ 5% from last hour</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Avg Latency</div>
-                <div class="stat-value" id="avg-latency">0ms</div>
-                <div class="stat-change">P99: <span id="p99-latency">0ms</span></div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Queue Depth</div>
-                <div class="stat-value" id="queue-depth">0</div>
-                <div class="stat-change">Capacity: 50,000</div>
-            </div>
-        </div>
-        
-        <!-- Charts -->
-        <div class="charts-grid">
-            <div class="chart-card">
-                <h3>Logs per Hour</h3>
-                <div class="chart" id="logs-chart"></div>
-            </div>
-            <div class="chart-card">
-                <h3>Error Rate</h3>
-                <div class="chart" id="errors-chart"></div>
-            </div>
-            <div class="chart-card">
-                <h3>Latency Distribution</h3>
-                <div class="chart" id="latency-chart"></div>
-            </div>
-        </div>
-        
-        <!-- Live Log Stream -->
-        <div class="live-section">
-            <div class="live-header">
-                <h2>Live Log Stream</h2>
-                <div class="live-badge">
-                    <div class="live-dot"></div>
-                    <span>LIVE</span>
+
+        <div class="content">
+            <section class="stats-section">
+                <div class="circular-card">
+                    <div class="circular-progress">
+                        <svg width="120" height="120" viewBox="0 0 120 120">
+                            <circle class="circular-bg" cx="60" cy="60" r="54"/>
+                            <circle class="circular-fill" cx="60" cy="60" r="54" id="progress-ring"/>
+                        </svg>
+                        <div class="circular-center">
+                            <div class="circular-percent" id="net-saved">75%</div>
+                            <div class="circular-subtitle">Net saved</div>
+                        </div>
+                    </div>
+                    <div class="circular-saved" id="saved-gb">-383.49GB</div>
                 </div>
-            </div>
-            <div class="log-stream" id="log-stream"></div>
+
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <div class="metric-icon blue">📡</div>
+                        <div class="metric-label">Listeners</div>
+                    </div>
+                    <div class="metric-value" id="listeners">80K</div>
+                    <div class="metric-change down">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17l5-5 5 5"/><path d="M7 7l5 5 5-5"/></svg>
+                        <span>0.93% EPS</span>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <div class="metric-icon orange">🎯</div>
+                        <div class="metric-label">Data sinks</div>
+                    </div>
+                    <div class="metric-value" id="data-sinks">2.5K</div>
+                    <div class="metric-change down">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17l5-5 5 5"/><path d="M7 7l5 5 5-5"/></svg>
+                        <span>0.71% EPS</span>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <div class="metric-icon pink">📊</div>
+                        <div class="metric-label">Data volume</div>
+                    </div>
+                    <div class="metric-value" id="data-volume">507.9GB</div>
+                    <div class="metric-change down">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17l5-5 5 5"/><path d="M7 7l5 5 5-5"/></svg>
+                        <span>1.3%</span>
+                    </div>
+                </div>
+
+                <div class="metric-card">
+                    <div class="metric-header">
+                        <div class="metric-icon cyan">⚡</div>
+                        <div class="metric-label">Estimation (24h)</div>
+                    </div>
+                    <div class="metric-value" id="estimation">1.02TB</div>
+                    <div class="metric-change down">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17l5-5 5 5"/><path d="M7 7l5 5 5-5"/></svg>
+                        <span>IN 1.3% → OUT 248.83GB</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="sankey-card">
+                <div class="sankey-top">
+                    <h2 class="sankey-title">Data Flow Visualization</h2>
+                    <div class="sankey-tabs">
+                        <div class="tab active">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+                            Listeners
+                        </div>
+                        <div class="tab">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>
+                            Clusters
+                        </div>
+                        <div class="tab">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/></svg>
+                            Labels
+                        </div>
+                        <div class="tab">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                            Pipelines
+                        </div>
+                        <div class="tab">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                            Data sinks
+                        </div>
+                    </div>
+                </div>
+
+                <div class="column-headers">
+                    <div class="col-header"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg> Listeners</div>
+                    <div class="col-header"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg> Clusters</div>
+                    <div class="col-header"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/></svg> Labels</div>
+                    <div class="col-header"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> Pipelines</div>
+                    <div class="col-header"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg> Data sinks</div>
+                </div>
+
+                <div class="sankey-visual">
+                    <svg class="sankey-svg" id="sankey-svg"></svg>
+                    <div class="particles-container" id="particles"></div>
+                </div>
+            </section>
+
+            <section class="logs-card">
+                <div class="logs-top">
+                    <h2 class="logs-title">Live Event Stream</h2>
+                    <div class="live-tag"><div class="live-pulse"></div>LIVE</div>
+                </div>
+                <div class="logs-table">
+                    <div class="logs-header-row">
+                        <div>Timestamp</div>
+                        <div>Level</div>
+                        <div>Namespace</div>
+                        <div>Message</div>
+                    </div>
+                    <div class="logs-body" id="logs-body">
+                        <div class="log-row" style="color: var(--text-muted); justify-content: center; display: flex;">
+                            Connecting to pipeline...
+                        </div>
+                    </div>
+                </div>
+            </section>
         </div>
-        
-        <!-- Pipelines -->
-        <h2 style="margin: 30px 0 20px;">Active Pipelines</h2>
-        <div class="pipelines-grid" id="pipelines"></div>
-        
-        <footer>
-            <p>K8s Log Ingestor Dashboard • Data refreshes every 2 seconds</p>
+
+        <footer class="footer">
+            K8s Log Pipeline Dashboard • Powered by ClickHouse • <span id="update-time">--:--:--</span>
         </footer>
-    </div>
-    
+    </main>
+
     <script>
-        const API = 'http://localhost:8082/api';
-        const QUERY_API = 'http://localhost:8081';
-        const INGESTOR_API = 'http://localhost:8080';
-        
-        let logCount = 0;
-        let hourlyData = Array(24).fill(0);
-        let errorData = Array(24).fill(0);
-        let latencyData = Array(24).fill(0);
-        
-        // Initialize charts
-        function initCharts() {
-            ['logs-chart', 'errors-chart', 'latency-chart'].forEach(id => {
-                const chart = document.getElementById(id);
-                chart.innerHTML = '';
-                for (let i = 0; i < 24; i++) {
-                    const bar = document.createElement('div');
-                    bar.className = 'chart-bar';
-                    bar.style.height = '4px';
-                    bar.dataset.value = '0';
-                    chart.appendChild(bar);
-                }
-            });
-        }
-        
-        // Update stats
-        async function updateStats() {
-            try {
-                // Get stats from Query service
-                const res = await fetch(`${QUERY_API}/logs/stats`).catch(() => null);
-                if (res && res.ok) {
-                    const data = await res.json();
-                    if (data.success) {
-                        updateStatValue('total-logs', formatNumber(data.data.total_logs));
-                    }
-                }
-            } catch (e) {}
+        const $ = id => document.getElementById(id);
+        const fmt = n => n >= 1e9 ? (n/1e9).toFixed(2)+'TB' : n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : n.toString();
+        const time = ts => ts ? new Date(ts).toLocaleTimeString('en-US', {hour12:false}) : '--:--:--';
+        const esc = t => { const d=document.createElement('div'); d.textContent=t; return d.innerHTML; };
+
+        const colors = ['#60a5fa', '#a78bfa', '#f472b6', '#fb923c', '#22d3ee', '#4ade80'];
+
+        function drawSankey(nsCounts) {
+            const svg = $('sankey-svg');
+            const rect = svg.parentElement.getBoundingClientRect();
+            const w = rect.width || 1000;
+            const h = 420;
             
-            // Simulated data for demo
-            const rate = Math.floor(Math.random() * 100) + 50;
-            updateStatValue('ingestor-rate', rate);
-            updateStatValue('ch-rate', rate - Math.floor(Math.random() * 5));
+            const total = Object.values(nsCounts).reduce((a,b) => a+b, 0) || 1;
+            const entries = Object.entries(nsCounts).sort((a,b) => b[1] - a[1]);
             
-            // Update queue
-            const queue = Math.floor(Math.random() * 200);
-            updateStatValue('queue-depth', queue);
+            const cols = { 
+                listeners: 70, 
+                clusters: w * 0.22, 
+                labels: w * 0.42, 
+                pipelines: w * 0.62, 
+                sinks: w - 80 
+            };
             
-            // Update latency
-            const latency = Math.floor(Math.random() * 50) + 10;
-            const p99 = latency * 3;
-            document.getElementById('avg-latency').textContent = latency + 'ms';
-            document.getElementById('p99-latency').textContent = p99 + 'ms';
+            let svgContent = '';
+            let particlesHtml = '';
+            let y = 30;
             
-            // Update hourly data
-            const hour = new Date().getHours();
-            hourlyData[hour] = rate;
-            errorData[hour] = Math.floor(rate * 0.05);
-            latencyData[hour] = latency;
-            
-            updateChart('logs-chart', hourlyData);
-            updateChart('errors-chart', errorData);
-            updateChart('latency-chart', latencyData.map(v => v * 2));
-        }
-        
-        function updateStatValue(id, value) {
-            document.getElementById(id).textContent = value;
-        }
-        
-        function updateChart(id, data) {
-            const chart = document.getElementById(id);
-            const max = Math.max(...data, 1);
-            const bars = chart.querySelectorAll('.chart-bar');
-            bars.forEach((bar, i) => {
-                const height = (data[i] / max) * 100 || 4;
-                bar.style.height = height + '%';
-                bar.dataset.value = data[i];
-            });
-        }
-        
-        // Live log stream
-        async function fetchLogs() {
-            try {
-                const res = await fetch(`${QUERY_API}/logs?limit=10`).catch(() => null);
-                if (res && res.ok) {
-                    const data = await res.json();
-                    if (data.success && data.data.logs) {
-                        addLogs(data.data.logs.slice(0, 5));
-                    }
-                }
-            } catch (e) {}
-            
-            // Add simulated logs for demo
-            const sampleLogs = [
-                { level: 'error', msg: 'Connection timeout to database', ns: 'production' },
-                { level: 'warn', msg: 'High memory usage detected', ns: 'staging' },
-                { level: 'info', msg: 'Health check passed', ns: 'production' },
-                { level: 'debug', msg: 'Cache hit for user session', ns: 'api' },
-                { level: 'info', msg: 'Request completed successfully', ns: 'production' },
-            ];
-            const randomLog = sampleLogs[Math.floor(Math.random() * sampleLogs.length)];
-            addLogs([{
-                timestamp: new Date().toISOString(),
-                level: randomLog.level,
-                message: randomLog.msg,
-                namespace: randomLog.ns,
-                pod: 'pod-' + Math.random().toString(36).substr(2, 6)
-            }]);
-        }
-        
-        function addLogs(logs) {
-            const stream = document.getElementById('log-stream');
-            logs.forEach(log => {
-                const entry = document.createElement('div');
-                entry.className = 'log-entry';
-                entry.innerHTML = `
-                    <span class="log-time">${formatTime(log.timestamp)}</span>
-                    <span class="log-level ${log.level}">${log.level}</span>
-                    <span class="log-msg">${escapeHtml(log.message)}</span>
-                    <span class="log-ns">${log.namespace}/${log.pod?.split('-')[0]}</span>
-                `;
-                stream.insertBefore(entry, stream.firstChild);
-                logCount++;
+            entries.forEach(([ns, count], i) => {
+                const height = Math.max(35, (count / total) * 320);
+                const color = colors[i % colors.length];
+                const midY = y + height / 2;
                 
-                // Keep only last 50
-                while (stream.children.length > 50) {
-                    stream.removeChild(stream.lastChild);
+                // Listener node
+                svgContent += `<g class="sankey-node-group" style="cursor:pointer">
+                    <rect x="15" y="${y}" width="110" height="${height}" rx="6" fill="${color}" opacity="0.85"/>
+                    <text x="70" y="${midY - 6}" text-anchor="middle" fill="white" font-size="12" font-weight="600">${ns}</text>
+                    <text x="70" y="${midY + 10}" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="11">${(count/1000).toFixed(1)}K events</text>
+                </g>`;
+                
+                // Flow to clusters
+                const clusterY = 80 + i * 55;
+                svgContent += `<path d="M125,${midY} C${w*0.15},${midY} ${w*0.18},${clusterY} ${cols.clusters},${clusterY}" 
+                    fill="none" stroke="url(#flowGrad1)" stroke-width="${height*0.5}" stroke-linecap="round" opacity="0.5">
+                    <animate attributeName="stroke-dasharray" values="0,500;500,0" dur="${3+i*0.3}s" repeatCount="indefinite"/>
+                </path>`;
+                
+                // Cluster node
+                svgContent += `<g>
+                    <rect x="${cols.clusters - 25}" y="${clusterY - 18}" width="50" height="36" rx="6" fill="${color}" opacity="0.6"/>
+                    <text x="${cols.clusters}" y="${clusterY + 4}" text-anchor="middle" fill="white" font-size="9" font-weight="500">cluster</text>
+                </g>`;
+                
+                // Flow to labels
+                const labelY = 60 + i * 50;
+                svgContent += `<path d="M${cols.clusters + 25},${clusterY} C${w*0.32},${clusterY} ${w*0.36},${labelY} ${cols.labels},${labelY}" 
+                    fill="none" stroke="url(#flowGrad2)" stroke-width="${height*0.4}" stroke-linecap="round" opacity="0.5"/>`;
+                
+                // Label node
+                svgContent += `<g>
+                    <rect x="${cols.labels - 35}" y="${labelY - 20}" width="70" height="40" rx="6" fill="${color}" opacity="0.5"/>
+                    <text x="${cols.labels}" y="${labelY + 2}" text-anchor="middle" fill="white" font-size="9" font-weight="500">${ns.substring(0,10)}</text>
+                    <text x="${cols.labels}" y="${labelY + 14}" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="8">${(count/1000).toFixed(1)}K</text>
+                </g>`;
+                
+                // Flow to pipelines
+                const pipelineY = 100 + i * 45;
+                svgContent += `<path d="M${cols.labels + 35},${labelY} C${w*0.52},${labelY} ${w*0.55},${pipelineY} ${cols.pipelines},${pipelineY}" 
+                    fill="none" stroke="url(#flowGrad1)" stroke-width="${height*0.35}" stroke-linecap="round" opacity="0.55"/>`;
+                
+                // Pipeline node
+                svgContent += `<g>
+                    <rect x="${cols.pipelines - 35}" y="${pipelineY - 18}" width="70" height="36" rx="6" fill="${color}" opacity="0.65"/>
+                    <text x="${cols.pipelines}" y="${pipelineY + 4}" text-anchor="middle" fill="white" font-size="9" font-weight="500">parser</text>
+                </g>`;
+                
+                // Flow to sink
+                const sinkY = 80 + i * 45;
+                svgContent += `<path d="M${cols.pipelines + 35},${pipelineY} C${w*0.72},${pipelineY} ${w*0.78},${sinkY} ${cols.sinks - 40},${sinkY}" 
+                    fill="none" stroke="url(#flowGrad3)" stroke-width="${height*0.3}" stroke-linecap="round" opacity="0.6"/>`;
+                
+                // Particles
+                for (let p = 0; p < 2; p++) {
+                    particlesHtml += `<div class="flow-particle" style="--start-y: ${midY}px; --end-y: ${sinkY}px; animation-delay: ${i*0.5 + p*2}s; animation-duration: ${4 + p}s;"></div>`;
                 }
+                
+                y += height + 15;
             });
+            
+            // ClickHouse sink
+            svgContent += `<g>
+                <rect x="${cols.sinks - 50}" y="80" width="100" height="${Math.min(y - 80, 300)}" rx="8" fill="url(#flowGrad3)" opacity="0.8"/>
+                <text x="${cols.sinks}" y="${Math.min(80 + (y-80)/2, 200)}" text-anchor="middle" fill="white" font-size="14" font-weight="700">ClickHouse</text>
+                <text x="${cols.sinks}" y="${Math.min(80 + (y-80)/2 + 20, 220)}" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="12">${fmt(total)}</text>
+                <text x="${cols.sinks}" y="${Math.min(80 + (y-80)/2 + 38, 240)}" text-anchor="middle" fill="rgba(255,255,255,0.6)" font-size="10">total events</text>
+            </g>`;
+            
+            svg.innerHTML = svgContent;
+            $('particles').innerHTML = particlesHtml;
+            
+            // Update progress ring
+            const progress = Math.min((total / 50000) * 100, 100);
+            const circumference = 2 * Math.PI * 54;
+            $('progress-ring').style.strokeDashoffset = circumference - (progress / 100) * circumference;
+            $('net-saved').textContent = Math.round(progress) + '%';
+            $('saved-gb').textContent = '-' + (total / 1000).toFixed(1) + 'GB';
+            $('listeners').textContent = Math.round(total / 1000) + 'K';
+            $('data-volume').textContent = (total / 1000).toFixed(1) + 'GB';
+            $('estimation').textContent = fmt(total * 2);
         }
-        
-        // Pipelines
-        async function fetchPipelines() {
-            try {
-                const res = await fetch(`${API}/pipelines`).catch(() => null);
-                if (res && res.ok) {
-                    const data = await res.json();
-                    if (data.success) {
-                        renderPipelines(data.data.pipelines);
-                    }
-                }
-            } catch (e) {
-                // Show demo pipelines
-                renderPipelines([
-                    { name: 'Production', namespaces: [{name: 'production'}, {name: 'api'}], enabled: true },
-                    { name: 'Staging', namespaces: [{name: 'staging'}], enabled: true },
-                    { name: 'Dev', namespaces: [{name: 'development'}], enabled: false }
-                ]);
+
+        function renderLogs(logs) {
+            const body = $('logs-body');
+            if (!logs || !logs.length) {
+                body.innerHTML = '<div class="log-row" style="color:var(--text-muted);justify-content:center;display:flex">No events</div>';
+                return;
             }
+            body.innerHTML = logs.slice(0, 20).map(log => {
+                const lvl = log.level || 'info';
+                return `<div class="log-row">
+                    <span class="log-ts">${time(log.timestamp)}</span>
+                    <span class="log-lvl ${lvl}">${lvl}</span>
+                    <span class="log-ns">${esc(log.namespace)}</span>
+                    <span class="log-msg">${esc(log.message)}</span>
+                </div>`;
+            }).join('');
         }
-        
-        function renderPipelines(pipelines) {
-            const container = document.getElementById('pipelines');
-            container.innerHTML = pipelines.map(p => `
-                <div class="pipeline-card ${p.enabled ? '' : 'disabled'}">
-                    <div class="pipeline-header">
-                        <span class="pipeline-name">${escapeHtml(p.name)}</span>
-                        <span class="pipeline-badge ${p.enabled ? 'active' : 'inactive'}">${p.enabled ? 'Active' : 'Inactive'}</span>
-                    </div>
-                    <div class="pipeline-namespaces">
-                        ${(p.namespaces || []).map(ns => `<span class="ns-tag">${escapeHtml(ns.name)}</span>`).join('')}
-                    </div>
-                </div>
-            `).join('');
+
+        function fetchData() {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', '/api/logs');
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    try {
+                        const data = JSON.parse(xhr.responseText);
+                        if (data.success && data.data) {
+                            const logs = data.data.logs || [];
+                            const nsCounts = {};
+                            logs.forEach(log => nsCounts[log.namespace] = (nsCounts[log.namespace] || 0) + 1);
+                            $('update-time').textContent = new Date().toLocaleTimeString('en-US', {hour12:false});
+                            drawSankey(nsCounts);
+                            renderLogs(logs);
+                        }
+                    } catch (e) { console.error(e); }
+                }
+            };
+            xhr.send();
         }
-        
-        // Helpers
-        function formatTime(ts) {
-            if (!ts) return '--:--:--';
-            return new Date(ts).toLocaleTimeString();
-        }
-        
-        function formatNumber(n) {
-            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-            if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-            return n.toString();
-        }
-        
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text || '';
-            return div.innerHTML;
-        }
-        
-        // Update pod count
-        async function updatePodCount() {
-            document.getElementById('pods-count').textContent = Math.floor(Math.random() * 50) + 100;
-        }
-        
-        // Demo mode - use simulated data
-        function startDemoMode() {
-            // Simulated rates
-            setInterval(() => {
-                const rate = Math.floor(Math.random() * 100) + 50;
-                updateStatValue('ingestor-rate', rate);
-                updateStatValue('ch-rate', rate - Math.floor(Math.random() * 5));
-                document.getElementById('fb-rate').textContent = rate + Math.floor(Math.random() * 20);
-            }, 2000);
-            
-            // Simulated logs
-            const sampleLogs = [
-                { level: 'error', msg: 'Database connection failed: timeout after 30s', ns: 'production' },
-                { level: 'warn', msg: 'Memory usage at 85%, consider scaling', ns: 'staging' },
-                { level: 'info', msg: 'User authenticated successfully', ns: 'api' },
-                { level: 'debug', msg: 'Cache miss for key: user_session_123', ns: 'production' },
-                { level: 'info', msg: 'POST /api/users 200 OK 45ms', ns: 'production' },
-                { level: 'error', msg: 'Failed to send email: SMTP server unreachable', ns: 'notifications' },
-                { level: 'warn', msg: 'Disk usage at 90% on /var/log', ns: 'monitoring' },
-                { level: 'info', msg: 'Health check passed for all services', ns: 'production' },
-            ];
-            
-            setInterval(() => {
-                const log = sampleLogs[Math.floor(Math.random() * sampleLogs.length)];
-                addLogs([{
-                    timestamp: new Date().toISOString(),
-                    level: log.level,
-                    message: log.msg,
-                    namespace: log.ns,
-                    pod: log.ns + '-' + Math.random().toString(36).substr(2, 4)
-                }]);
-            }, 1500);
-            
-            // Update charts
-            setInterval(() => {
-                const hour = new Date().getHours();
-                hourlyData[hour] = Math.floor(Math.random() * 100) + 50;
-                errorData[hour] = Math.floor(Math.random() * 10);
-                latencyData[hour] = Math.floor(Math.random() * 50) + 10;
-                updateChart('logs-chart', hourlyData);
-                updateChart('errors-chart', errorData);
-                updateChart('latency-chart', latencyData.map(v => v * 2));
-            }, 5000);
-        }
-        
-        // Initialize
-        initCharts();
-        updatePodCount();
-        startDemoMode();
-        fetchPipelines();
+
+        fetchData();
+        setInterval(fetchData, 3000);
+        window.addEventListener('resize', fetchData);
     </script>
 </body>
 </html>

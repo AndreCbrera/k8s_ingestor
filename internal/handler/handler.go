@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -57,7 +59,12 @@ func init() {
 
 type FluentBitLog struct {
 	Log        string `json:"log"`
+	Message    string `json:"message"`
 	Timestamp  string `json:"time"`
+	Timestamp2 string `json:"timestamp"`
+	Service    string `json:"service"`
+	Namespace  string `json:"namespace"`
+	Level      string `json:"level"`
 	Kubernetes struct {
 		Namespace   string            `json:"namespace_name"`
 		Pod         string            `json:"pod_name"`
@@ -152,12 +159,30 @@ func (h *Handler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 
 	var logs []FluentBitLog
 	if err := json.Unmarshal(body, &logs); err != nil {
-		var single FluentBitLog
-		if err := json.Unmarshal(body, &single); err != nil {
-			h.sendError(w, http.StatusBadRequest, ErrCodeInvalidJSON, "Invalid JSON format", err.Error(), requestID)
+		if len(body) > 0 {
+			scanner := bufio.NewScanner(bytes.NewReader(body))
+			for scanner.Scan() {
+				line := bytes.TrimSpace(scanner.Bytes())
+				if len(line) == 0 {
+					continue
+				}
+				var log FluentBitLog
+				if err := json.Unmarshal(line, &log); err == nil {
+					logs = append(logs, log)
+				}
+			}
+			if len(logs) == 0 {
+				var single FluentBitLog
+				if err := json.Unmarshal(body, &single); err != nil {
+					h.sendError(w, http.StatusBadRequest, ErrCodeInvalidJSON, "Invalid JSON format", err.Error(), requestID)
+					return
+				}
+				logs = []FluentBitLog{single}
+			}
+		} else {
+			h.sendError(w, http.StatusBadRequest, ErrCodeEmptyBody, "Empty request body", "", requestID)
 			return
 		}
-		logs = []FluentBitLog{single}
 	}
 
 	entries := make([]ProcessedLog, 0, len(logs))
@@ -165,6 +190,10 @@ func (h *Handler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	rejected := 0
 
 	for _, l := range logs {
+		if l.Log == "" && l.Message == "" {
+			rejected++
+			continue
+		}
 		if entry := h.processLog(ctx, l); entry != nil {
 			entry.ID = uuid.New().String()
 			entries = append(entries, *entry)
@@ -227,14 +256,23 @@ func (h *Handler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) processLog(ctx context.Context, l FluentBitLog) *ProcessedLog {
-	if l.Log == "" {
+	msg := l.Log
+	if msg == "" {
+		msg = l.Message
+	}
+	if msg == "" {
 		return nil
 	}
 
-	msg := cleanMessage(l.Log)
-	level := detectLevel(msg)
+	level := l.Level
+	if level == "" {
+		level = detectLevel(msg)
+	}
 
 	ns := strings.TrimSpace(l.Kubernetes.Namespace)
+	if ns == "" {
+		ns = strings.TrimSpace(l.Namespace)
+	}
 	if ns == "" {
 		ns = "unknown"
 	}
@@ -246,6 +284,9 @@ func (h *Handler) processLog(ctx context.Context, l FluentBitLog) *ProcessedLog 
 
 	container := strings.TrimSpace(l.Kubernetes.Container)
 	if container == "" {
+		container = l.Service
+	}
+	if container == "" {
 		container = "unknown"
 	}
 
@@ -254,6 +295,9 @@ func (h *Handler) processLog(ctx context.Context, l FluentBitLog) *ProcessedLog 
 	pod = h.masker.Mask(pod)
 
 	ts := parseTimestamp(l.Timestamp)
+	if ts.IsZero() {
+		ts = parseTimestamp(l.Timestamp2)
+	}
 	if ts.IsZero() {
 		ts = time.Now()
 	}
@@ -293,6 +337,115 @@ func (h *Handler) HandleDLQ(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.sendError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "Method not allowed", "", requestID)
 	}
+}
+
+func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
+	requestID := h.getOrGenerateRequestID(r)
+
+	if r.Method != http.MethodGet {
+		h.sendError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "Method not allowed", "", requestID)
+		return
+	}
+
+	sql := r.URL.Query().Get("sql")
+	if sql == "" {
+		h.sendError(w, http.StatusBadRequest, ErrCodeInvalidJSON, "Missing sql parameter", "", requestID)
+		return
+	}
+
+	if chClient == nil {
+		h.sendError(w, http.StatusServiceUnavailable, ErrCodeServiceUnavailable, "ClickHouse not connected", "", requestID)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	rows, err := chClient.Query(ctx, sql)
+	if err != nil {
+		h.sendError(w, http.StatusInternalServerError, ErrCodeInternalError, "Query failed: "+err.Error(), "", requestID)
+		return
+	}
+	defer rows.Close()
+
+	columns := rows.Columns()
+	data := []map[string]interface{}{}
+
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range columns {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			continue
+		}
+
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			row[col] = values[i]
+		}
+		data = append(data, row)
+	}
+
+	h.sendSuccess(w, http.StatusOK, requestID, data)
+}
+
+func (h *Handler) HandleGetLogs(w http.ResponseWriter, r *http.Request) {
+	requestID := h.getOrGenerateRequestID(r)
+
+	if r.Method != http.MethodGet {
+		h.sendError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "Method not allowed", "", requestID)
+		return
+	}
+
+	if chClient == nil {
+		h.sendError(w, http.StatusServiceUnavailable, ErrCodeServiceUnavailable, "ClickHouse not connected", "", requestID)
+		return
+	}
+
+	limit := 20
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	logs, total, err := chClient.QueryLogs(ctx, clickhouse.QueryOptions{
+		Limit:      limit,
+		StartTime:  time.Now().Add(-24 * time.Hour),
+		EndTime:    time.Now(),
+		OrderBy:    "timestamp",
+		Descending: true,
+	})
+
+	if err != nil {
+		h.sendError(w, http.StatusInternalServerError, ErrCodeInternalError, "Query failed: "+err.Error(), "", requestID)
+		return
+	}
+
+	data := make([]map[string]interface{}, 0, len(logs))
+	for _, log := range logs {
+		data = append(data, map[string]interface{}{
+			"timestamp": log.Timestamp,
+			"namespace": log.Namespace,
+			"pod":       log.Pod,
+			"container": log.Container,
+			"level":     log.Level,
+			"message":   log.Message,
+			"cluster":   log.Cluster,
+			"node_name": log.NodeName,
+			"host_ip":   log.HostIP,
+		})
+	}
+
+	h.sendSuccess(w, http.StatusOK, requestID, map[string]interface{}{
+		"logs":  data,
+		"total": total,
+		"limit": limit,
+	})
 }
 
 func (h *Handler) getDLQStats(w http.ResponseWriter, requestID string) {
