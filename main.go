@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -33,7 +34,10 @@ var (
 	workerWg    sync.WaitGroup
 	shutdownCh  chan struct{}
 	logQueue    chan handler.ProcessedLog
+	batchQueue  chan []handler.ProcessedLog
 	h           *handler.Handler
+	insertWg    sync.WaitGroup
+	semaphore   chan struct{}
 
 	metricsLogsReceived = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -75,6 +79,12 @@ var (
 			Help: "Current size of the dead letter queue",
 		},
 	)
+	metricsActiveInserts = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "active_inserts",
+			Help: "Number of concurrent insert operations",
+		},
+	)
 )
 
 func init() {
@@ -92,12 +102,14 @@ func main() {
 		metricsInsertDuration,
 		metricsQueueSize,
 		metricsDLQSize,
+		metricsActiveInserts,
 	)
 
 	cfg = config.Load()
 	limiter = rate.NewLimiter(rate.Limit(cfg.RateLimitPerSec), cfg.RateLimitBurst)
 	shutdownCh = make(chan struct{})
 	logQueue = make(chan handler.ProcessedLog, cfg.QueueSize)
+	batchQueue = make(chan []handler.ProcessedLog, 100)
 
 	handler.SetLogQueue(logQueue)
 
@@ -117,6 +129,7 @@ func main() {
 		"cluster", cfg.ClusterName,
 		"log_masking", cfg.LogMasking,
 		"tracing", cfg.OtelEnabled,
+		"insert_workers", cfg.WorkerCount,
 	)
 
 	var err error
@@ -144,6 +157,11 @@ func main() {
 	for i := 0; i < cfg.WorkerCount; i++ {
 		workerWg.Add(1)
 		go startWorker(i)
+	}
+
+	for i := 0; i < cfg.WorkerCount; i++ {
+		insertWg.Add(1)
+		go startInsertWorker(i)
 	}
 
 	mux := http.NewServeMux()
@@ -174,7 +192,7 @@ func main() {
 	slog.Info("shutting down...")
 	close(shutdownCh)
 
-	slog.Info("stopping HTTP server, allowing in-flight requests to complete...")
+	slog.Info("stopping HTTP server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -183,6 +201,10 @@ func main() {
 	}
 
 	workerWg.Wait()
+
+	close(batchQueue)
+
+	insertWg.Wait()
 
 	if err := chClient.Close(); err != nil {
 		slog.Error("error closing ClickHouse client", "error", err)
@@ -284,12 +306,26 @@ func startWorker(id int) {
 	ticker := time.NewTicker(cfg.FlushInterval)
 	defer ticker.Stop()
 
+	flushBatch := func() {
+		if len(batch) == 0 {
+			return
+		}
+		b := batch
+		batch = batch[:0]
+
+		select {
+		case batchQueue <- b:
+			metricsQueueSize.Set(float64(len(logQueue)))
+		default:
+			slog.Warn("batch queue full, dropping batch", "size", len(b))
+			metricsLogsInserted.WithLabelValues("dropped").Add(float64(len(b)))
+		}
+	}
+
 	for {
 		select {
 		case <-shutdownCh:
-			if len(batch) > 0 {
-				insertBatchWithRetry(batch)
-			}
+			flushBatch()
 			return
 
 		case entry := <-logQueue:
@@ -297,17 +333,39 @@ func startWorker(id int) {
 			metricsQueueSize.Set(float64(len(logQueue)))
 
 			if len(batch) >= cfg.BatchSize {
-				insertBatchWithRetry(batch)
-				batch = batch[:0]
+				flushBatch()
 			}
 
 		case <-ticker.C:
+			flushBatch()
+
+		case <-time.After(100 * time.Millisecond):
 			if len(batch) > 0 {
-				insertBatchWithRetry(batch)
-				batch = batch[:0]
+				flushBatch()
 			}
+			runtime.Gosched()
 		}
 	}
+}
+
+func startInsertWorker(id int) {
+	defer insertWg.Done()
+
+	for batch := range batchQueue {
+		if len(batch) == 0 {
+			continue
+		}
+
+		metricsActiveInserts.Inc()
+		insertBatchAsync(batch)
+		metricsActiveInserts.Dec()
+	}
+}
+
+func insertBatchAsync(logs []handler.ProcessedLog) {
+	go func() {
+		insertBatchWithRetry(logs)
+	}()
 }
 
 func insertBatchWithRetry(logs []handler.ProcessedLog) {
@@ -325,9 +383,8 @@ func insertBatchWithRetry(logs []handler.ProcessedLog) {
 	slog.Error("all insert attempts failed", "count", len(logs), "error", lastErr)
 	metricsLogsInserted.WithLabelValues("failed").Add(float64(len(logs)))
 
-	for _, l := range logs {
+	for range logs {
 		handler.AddToDLQ(handler.FailedLog{
-			ID:        l.ID,
 			Timestamp: time.Now(),
 			Retries:   cfg.MaxRetries,
 		})

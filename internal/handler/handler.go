@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -8,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +39,19 @@ type Handler struct {
 
 var dlqChan chan FailedLog
 var queueStatsFunc func() (int, int)
+var logQueue chan ProcessedLog
+
+var (
+	jsonBufferPool = sync.Pool{
+		New: func() interface{} {
+			return &bytes.Buffer{}
+		},
+	}
+)
+
+func init() {
+	dlqChan = make(chan FailedLog, 10000)
+}
 
 type FluentBitLog struct {
 	Log        string `json:"log"`
@@ -86,7 +102,6 @@ type LogsResponse struct {
 var logLevelRegex = regexp.MustCompile(`(?i)\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE|FATAL|CRITICAL)\b`)
 
 func New(cfg *config.Config, m *masker.Masker, t *tracing.Tracer) *Handler {
-	dlqChan = make(chan FailedLog, 10000)
 	return &Handler{
 		cfg:    cfg,
 		masker: m,
@@ -108,7 +123,21 @@ func (h *Handler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	var body []byte
+	var err error
+
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			h.sendError(w, http.StatusBadRequest, ErrCodeInvalidJSON, "Invalid gzip", err.Error(), requestID)
+			return
+		}
+		defer gr.Close()
+		body, err = io.ReadAll(gr)
+	} else {
+		body, err = io.ReadAll(r.Body)
+	}
+
 	if err != nil {
 		h.sendError(w, http.StatusBadRequest, ErrCodeInternalError, "Failed to read request body", err.Error(), requestID)
 		return
@@ -221,22 +250,16 @@ func (h *Handler) processLog(ctx context.Context, l FluentBitLog) *ProcessedLog 
 func (h *Handler) HandleDLQ(w http.ResponseWriter, r *http.Request) {
 	requestID := h.getOrGenerateRequestID(r)
 
-	if r.Method == http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
 		h.getDLQStats(w, requestID)
-		return
-	}
-
-	if r.Method == http.MethodPost {
+	case http.MethodPost:
 		h.retryDLQ(w, r, requestID)
-		return
-	}
-
-	if r.Method == http.MethodDelete {
+	case http.MethodDelete:
 		h.flushDLQ(w, requestID)
-		return
+	default:
+		h.sendError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "Method not allowed", "", requestID)
 	}
-
-	h.sendError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "Method not allowed", "", requestID)
 }
 
 func (h *Handler) getDLQStats(w http.ResponseWriter, requestID string) {
@@ -331,7 +354,13 @@ func (h *Handler) sendSuccess(w http.ResponseWriter, status int, requestID strin
 		Data:      data,
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	buf := jsonBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer jsonBufferPool.Put(buf)
+
+	enc := json.NewEncoder(buf)
+	enc.Encode(resp)
+	w.Write(buf.Bytes())
 }
 
 func (h *Handler) sendError(w http.ResponseWriter, status int, code, message, detail, requestID string) {
@@ -350,10 +379,14 @@ func (h *Handler) sendError(w http.ResponseWriter, status int, code, message, de
 		},
 	}
 
-	json.NewEncoder(w).Encode(resp)
-}
+	buf := jsonBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer jsonBufferPool.Put(buf)
 
-var logQueue chan ProcessedLog
+	enc := json.NewEncoder(buf)
+	enc.Encode(resp)
+	w.Write(buf.Bytes())
+}
 
 func SetLogQueue(q chan ProcessedLog) {
 	logQueue = q
