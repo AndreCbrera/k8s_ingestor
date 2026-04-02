@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -278,4 +279,210 @@ type Stats struct {
 	TotalLogs      uint64
 	LogsLastHour   uint64
 	ErrorsLastHour uint64
+}
+
+type QueryOptions struct {
+	Namespace  string
+	Pod        string
+	Container  string
+	Level      string
+	Cluster    string
+	Message    string
+	StartTime  time.Time
+	EndTime    time.Time
+	Limit      int
+	Offset     int
+	OrderBy    string
+	Descending bool
+}
+
+func (c *Client) QueryLogs(ctx context.Context, opts QueryOptions) ([]LogEntry, int64, error) {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return nil, 0, fmt.Errorf("connection is nil")
+	}
+
+	var conditions []string
+
+	if opts.Namespace != "" {
+		conditions = append(conditions, fmt.Sprintf("namespace = '%s'", opts.Namespace))
+	}
+	if opts.Pod != "" {
+		conditions = append(conditions, fmt.Sprintf("pod LIKE '%%%s%%'", opts.Pod))
+	}
+	if opts.Container != "" {
+		conditions = append(conditions, fmt.Sprintf("container = '%s'", opts.Container))
+	}
+	if opts.Level != "" {
+		conditions = append(conditions, fmt.Sprintf("level = '%s'", opts.Level))
+	}
+	if opts.Cluster != "" {
+		conditions = append(conditions, fmt.Sprintf("cluster = '%s'", opts.Cluster))
+	}
+	if opts.Message != "" {
+		conditions = append(conditions, fmt.Sprintf("message LIKE '%%%s%%'", opts.Message))
+	}
+
+	conditions = append(conditions, fmt.Sprintf("timestamp >= '%s'", opts.StartTime.Format(time.RFC3339)))
+	conditions = append(conditions, fmt.Sprintf("timestamp <= '%s'", opts.EndTime.Format(time.RFC3339)))
+
+	whereClause := ""
+	if len(conditions) > 0 {
+		whereClause = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	orderDir := "DESC"
+	if !opts.Descending {
+		orderDir = "ASC"
+	}
+
+	orderBy := opts.OrderBy
+	if orderBy == "" {
+		orderBy = "timestamp"
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	countQuery := fmt.Sprintf("SELECT count() FROM logs %s", whereClause)
+	var total int64
+	if err := conn.QueryRow(ctx, countQuery).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count query: %w", err)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			timestamp, cluster, namespace, pod, container, level, message,
+			labels, annotations, node_name, host_ip
+		FROM logs 
+		%s
+		ORDER BY %s %s
+		LIMIT %d OFFSET %d
+	`, whereClause, orderBy, orderDir, limit, opts.Offset)
+
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []LogEntry
+	for rows.Next() {
+		var log LogEntry
+		if err := rows.Scan(
+			&log.Timestamp, &log.Cluster, &log.Namespace, &log.Pod, &log.Container,
+			&log.Level, &log.Message, &log.Labels, &log.Annotations,
+			&log.NodeName, &log.HostIP,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan: %w", err)
+		}
+		logs = append(logs, log)
+	}
+
+	return logs, total, nil
+}
+
+func (c *Client) GetDistinctValues(ctx context.Context, field, prefix string) ([]string, error) {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return nil, fmt.Errorf("connection is nil")
+	}
+
+	query := fmt.Sprintf("SELECT DISTINCT %s FROM logs WHERE timestamp > now() - INTERVAL 7 DAY ORDER BY %s", field, field)
+
+	if prefix != "" {
+		query = fmt.Sprintf("SELECT DISTINCT %s FROM logs WHERE timestamp > now() - INTERVAL 7 DAY AND %s LIKE '%s%%' ORDER BY %s", field, field, prefix, field)
+	}
+
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var values []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			continue
+		}
+		if v != "" {
+			values = append(values, v)
+		}
+	}
+
+	return values, nil
+}
+
+func (c *Client) GetStatsFull(ctx context.Context) (*StatsFull, error) {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+
+	if conn == nil {
+		return nil, fmt.Errorf("connection is nil")
+	}
+
+	stats := &StatsFull{
+		ByLevel:     make(map[string]int64),
+		ByNamespace: make(map[string]int64),
+		ByCluster:   make(map[string]int64),
+	}
+
+	row := conn.QueryRow(ctx, "SELECT count() FROM logs")
+	row.Scan(&stats.TotalLogs)
+
+	row = conn.QueryRow(ctx, "SELECT max(timestamp) FROM logs")
+	row.Scan(&stats.LastIngestedAt)
+
+	rows, _ := conn.Query(ctx, "SELECT level, count() FROM logs WHERE timestamp > now() - INTERVAL 1 HOUR GROUP BY level")
+	for rows.Next() {
+		var level string
+		var count int64
+		rows.Scan(&level, &count)
+		stats.ByLevel[level] = count
+	}
+	rows.Close()
+
+	rows, _ = conn.Query(ctx, "SELECT namespace, count() FROM logs WHERE timestamp > now() - INTERVAL 1 HOUR GROUP BY namespace ORDER BY count() DESC LIMIT 20")
+	for rows.Next() {
+		var ns string
+		var count int64
+		rows.Scan(&ns, &count)
+		stats.ByNamespace[ns] = count
+	}
+	rows.Close()
+
+	rows, _ = conn.Query(ctx, "SELECT cluster, count() FROM logs WHERE timestamp > now() - INTERVAL 1 HOUR GROUP BY cluster")
+	for rows.Next() {
+		var cluster string
+		var count int64
+		rows.Scan(&cluster, &count)
+		stats.ByCluster[cluster] = count
+	}
+	rows.Close()
+
+	return stats, nil
+}
+
+type StatsFull struct {
+	TotalLogs      int64
+	ByLevel        map[string]int64
+	ByNamespace    map[string]int64
+	ByCluster      map[string]int64
+	LogsPerHour    []HourlyCount
+	LastIngestedAt time.Time
+}
+
+type HourlyCount struct {
+	Hour  time.Time
+	Count int64
 }

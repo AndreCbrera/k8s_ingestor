@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Log Pipeline Manager</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        header { background: #1a73e8; color: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+        header h1 { font-size: 24px; margin-bottom: 8px; }
+        header p { opacity: 0.9; font-size: 14px; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card h2 { font-size: 18px; margin-bottom: 16px; color: #1a73e8; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+        .pipeline { background: white; border-radius: 8px; padding: 16px; border-left: 4px solid #1a73e8; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .pipeline.disabled { border-left-color: #ccc; opacity: 0.7; }
+        .pipeline-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .pipeline-name { font-weight: 600; font-size: 16px; }
+        .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; }
+        .badge.enabled { background: #e6f4ea; color: #137333; }
+        .badge.disabled { background: #f1f3f4; color: #5f6368; }
+        .namespace-tag { display: inline-block; background: #e8f0fe; color: #1a73e8; padding: 4px 8px; border-radius: 4px; font-size: 12px; margin: 2px; }
+        .actions { display: flex; gap: 8px; margin-top: 12px; }
+        .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; transition: background 0.2s; }
+        .btn-primary { background: #1a73e8; color: white; }
+        .btn-primary:hover { background: #1557b0; }
+        .btn-secondary { background: #f1f3f4; color: #333; }
+        .btn-secondary:hover { background: #e8eaed; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-small { padding: 4px 12px; font-size: 12px; }
+        .form-group { margin-bottom: 16px; }
+        .form-group label { display: block; font-weight: 500; margin-bottom: 6px; color: #5f6368; }
+        .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+        .form-group input:focus, .form-group textarea:focus, .form-group select:focus { outline: none; border-color: #1a73e8; }
+        .tags-input { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; min-height: 44px; }
+        .tags-input input { border: none; outline: none; flex: 1; min-width: 120px; }
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
+        .modal.active { display: flex; align-items: center; justify-content: center; }
+        .modal-content { background: white; border-radius: 8px; padding: 24px; width: 500px; max-width: 90%; max-height: 90vh; overflow-y: auto; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .modal-header h2 { font-size: 20px; }
+        .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #5f6368; }
+        .nav { display: flex; gap: 16px; margin-bottom: 20px; }
+        .nav a { padding: 8px 16px; border-radius: 4px; text-decoration: none; color: #5f6368; }
+        .nav a.active { background: #e8f0fe; color: #1a73e8; }
+        .stats { display: flex; gap: 20px; }
+        .stat { text-align: center; }
+        .stat-value { font-size: 32px; font-weight: 600; color: #1a73e8; }
+        .stat-label { font-size: 12px; color: #5f6368; }
+        .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: 4px; color: white; z-index: 2000; }
+        .toast.success { background: #137333; }
+        .toast.error { background: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Log Pipeline Manager</h1>
+            <p>Configure which logs are ingested into ClickHouse</p>
+        </header>
+
+        <div class="nav">
+            <a href="#" class="active" onclick="showSection('pipelines')">Pipelines</a>
+            <a href="#" onclick="showSection('create')">Create Pipeline</a>
+            <a href="#" onclick="showSection('config')">Fluent Bit Config</a>
+        </div>
+
+        <div id="pipelines-section">
+            <div class="card">
+                <div class="stats">
+                    <div class="stat">
+                        <div class="stat-value" id="total-pipelines">0</div>
+                        <div class="stat-label">Total Pipelines</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value" id="active-pipelines">0</div>
+                        <div class="stat-label">Active</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value" id="total-namespaces">0</div>
+                        <div class="stat-label">Namespaces</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid" id="pipelines-list"></div>
+        </div>
+
+        <div id="create-section" style="display:none;">
+            <div class="card">
+                <h2>Create New Pipeline</h2>
+                <form id="pipeline-form">
+                    <div class="form-group">
+                        <label>Pipeline Name</label>
+                        <input type="text" name="name" placeholder="Production Logs" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Description</label>
+                        <textarea name="description" placeholder="Log ingestion for production workloads" rows="2"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Namespaces (one per line)</label>
+                        <textarea name="namespaces" placeholder="production&#10;staging&#10;api" rows="4"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Log Levels (comma separated)</label>
+                        <input type="text" name="levels" placeholder="error,warn,info,debug" value="error,warn,info">
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" name="enabled" checked> Enable Pipeline
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Create Pipeline</button>
+                </form>
+            </div>
+        </div>
+
+        <div id="config-section" style="display:none;">
+            <div class="card">
+                <h2>Fluent Bit Lua Filter Configuration</h2>
+                <p style="margin-bottom:16px;color:#5f6368;">Copy this configuration to your Fluent Bit ConfigMap or use it with FluxCD to auto-sync.</p>
+                <pre id="fluentbit-config" style="background:#1a1a1a;color:#f8f8f2;padding:16px;border-radius:4px;overflow-x:auto;font-size:12px;max-height:400px;"></pre>
+                <button class="btn btn-secondary" onclick="refreshConfig()">Refresh Config</button>
+                <button class="btn btn-primary" onclick="downloadConfig()">Download</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="edit-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Edit Pipeline</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <form id="edit-form">
+                <input type="hidden" name="id">
+                <div class="form-group">
+                    <label>Pipeline Name</label>
+                    <input type="text" name="name" required>
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <textarea name="description" rows="2"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Namespaces (one per line)</label>
+                    <textarea name="namespaces" rows="4"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Log Levels</label>
+                    <input type="text" name="levels">
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" name="enabled"> Enable Pipeline
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const API = '/api';
+        let pipelines = [];
+
+        async function fetchPipelines() {
+            try {
+                const res = await fetch(`${API}/pipelines`);
+                const data = await res.json();
+                if (data.success) {
+                    pipelines = data.data.pipelines;
+                    renderPipelines();
+                    updateStats();
+                }
+            } catch (err) {
+                showToast('Failed to fetch pipelines', 'error');
+            }
+        }
+
+        function renderPipelines() {
+            const list = document.getElementById('pipelines-list');
+            if (pipelines.length === 0) {
+                list.innerHTML = '<p style="color:#5f6368;">No pipelines yet. Create one to get started.</p>';
+                return;
+            }
+            list.innerHTML = pipelines.map(p => `
+                <div class="pipeline ${p.enabled ? '' : 'disabled'}">
+                    <div class="pipeline-header">
+                        <span class="pipeline-name">${escapeHtml(p.name)}</span>
+                        <span class="badge ${p.enabled ? 'enabled' : 'disabled'}">${p.enabled ? 'Active' : 'Disabled'}</span>
+                    </div>
+                    <p style="color:#5f6368;font-size:13px;margin-bottom:8px;">${escapeHtml(p.description || 'No description')}</p>
+                    <div style="margin-bottom:8px;">
+                        ${(p.namespaces || []).map(ns => `<span class="namespace-tag">${escapeHtml(ns.name)}</span>`).join('')}
+                        ${(p.namespaces || []).length === 0 ? '<span style="color:#5f6368;font-size:12px;">All namespaces</span>' : ''}
+                    </div>
+                    <div class="actions">
+                        <button class="btn btn-secondary btn-small" onclick="editPipeline('${p.id}')">Edit</button>
+                        <button class="btn btn-small" onclick="togglePipeline('${p.id}')">${p.enabled ? 'Disable' : 'Enable'}</button>
+                        <button class="btn btn-danger btn-small" onclick="deletePipeline('${p.id}')">Delete</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function updateStats() {
+            document.getElementById('total-pipelines').textContent = pipelines.length;
+            document.getElementById('active-pipelines').textContent = pipelines.filter(p => p.enabled).length;
+            const namespaces = new Set();
+            pipelines.forEach(p => (p.namespaces || []).forEach(ns => namespaces.add(ns.name)));
+            document.getElementById('total-namespaces').textContent = namespaces.size;
+        }
+
+        document.getElementById('pipeline-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const namespaces = form.namespaces.value.split('\n').filter(n => n.trim());
+            
+            const pipeline = {
+                name: form.name.value,
+                description: form.description.value,
+                namespaces: namespaces.map(n => ({ name: n.trim(), include: true })),
+                levels: form.levels.value.split(',').map(l => l.trim()).filter(l => l),
+                enabled: form.enabled.checked
+            };
+
+            try {
+                const res = await fetch(`${API}/pipelines/create`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(pipeline)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('Pipeline created', 'success');
+                    form.reset();
+                    fetchPipelines();
+                    showSection('pipelines');
+                } else {
+                    showToast(data.error?.message || 'Failed to create', 'error');
+                }
+            } catch (err) {
+                showToast('Failed to create pipeline', 'error');
+            }
+        });
+
+        async function editPipeline(id) {
+            const p = pipelines.find(p => p.id === id);
+            if (!p) return;
+            
+            const form = document.getElementById('edit-form');
+            form.id.value = p.id;
+            form.name.value = p.name;
+            form.description.value = p.description || '';
+            form.namespaces.value = (p.namespaces || []).map(ns => ns.name).join('\n');
+            form.levels.value = (p.levels || []).join(',');
+            form.enabled.checked = p.enabled;
+            
+            document.getElementById('edit-modal').classList.add('active');
+        }
+
+        document.getElementById('edit-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target;
+            const namespaces = form.namespaces.value.split('\n').filter(n => n.trim());
+            
+            const updates = {
+                name: form.name.value,
+                description: form.description.value,
+                namespaces: namespaces.map(n => ({ name: n.trim(), include: true })),
+                levels: form.levels.value.split(',').map(l => l.trim()).filter(l => l),
+                enabled: form.enabled.checked
+            };
+
+            try {
+                const res = await fetch(`${API}/pipelines/update?id=${form.id.value}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updates)
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('Pipeline updated', 'success');
+                    closeModal();
+                    fetchPipelines();
+                } else {
+                    showToast(data.error?.message || 'Failed to update', 'error');
+                }
+            } catch (err) {
+                showToast('Failed to update pipeline', 'error');
+            }
+        });
+
+        async function togglePipeline(id) {
+            const p = pipelines.find(p => p.id === id);
+            if (!p) return;
+            
+            try {
+                await fetch(`${API}/pipelines/update?id=${id}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: !p.enabled })
+                });
+                fetchPipelines();
+            } catch (err) {
+                showToast('Failed to toggle pipeline', 'error');
+            }
+        }
+
+        async function deletePipeline(id) {
+            if (!confirm('Delete this pipeline?')) return;
+            
+            try {
+                await fetch(`${API}/pipelines/delete?id=${id}`, { method: 'POST' });
+                showToast('Pipeline deleted', 'success');
+                fetchPipelines();
+            } catch (err) {
+                showToast('Failed to delete pipeline', 'error');
+            }
+        }
+
+        async function refreshConfig() {
+            try {
+                const res = await fetch(`${API}/pipelines/config`);
+                const text = await res.text();
+                document.getElementById('fluentbit-config').textContent = text;
+            } catch (err) {
+                showToast('Failed to fetch config', 'error');
+            }
+        }
+
+        function downloadConfig() {
+            const config = document.getElementById('fluentbit-config').textContent;
+            const blob = new Blob([config], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'filter.lua';
+            a.click();
+        }
+
+        function closeModal() {
+            document.getElementById('edit-modal').classList.remove('active');
+        }
+
+        function showSection(section) {
+            document.querySelectorAll('.nav a').forEach(a => a.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            document.getElementById('pipelines-section').style.display = section === 'pipelines' ? 'block' : 'none';
+            document.getElementById('create-section').style.display = section === 'create' ? 'block' : 'none';
+            document.getElementById('config-section').style.display = section === 'config' ? 'block' : 'none';
+            
+            if (section === 'config') refreshConfig();
+        }
+
+        function showToast(message, type) {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        fetchPipelines();
+    </script>
+</body>
+</html>
