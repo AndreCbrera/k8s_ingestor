@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,10 +29,11 @@ var (
 	logMasker   *masker.Masker
 	tracer      *tracing.Tracer
 	limiter     *rate.Limiter
-	isConnected bool
+	isConnected atomic.Bool
 	workerWg    sync.WaitGroup
 	shutdownCh  chan struct{}
 	logQueue    chan handler.ProcessedLog
+	h           *handler.Handler
 
 	metricsLogsReceived = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -67,13 +69,19 @@ var (
 			Help: "Current size of the log queue",
 		},
 	)
+	metricsDLQSize = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dlq_size",
+			Help: "Current size of the dead letter queue",
+		},
+	)
 )
 
 func init() {
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
-	slog.SetDefault(slog.New(handler))
+	slog.SetDefault(slog.New(h))
 }
 
 func main() {
@@ -83,12 +91,15 @@ func main() {
 		metricsBatchSize,
 		metricsInsertDuration,
 		metricsQueueSize,
+		metricsDLQSize,
 	)
 
 	cfg = config.Load()
 	limiter = rate.NewLimiter(rate.Limit(cfg.RateLimitPerSec), cfg.RateLimitBurst)
 	shutdownCh = make(chan struct{})
 	logQueue = make(chan handler.ProcessedLog, cfg.QueueSize)
+
+	handler.SetLogQueue(logQueue)
 
 	logMasker = masker.New(cfg.LogMasking)
 
@@ -125,26 +136,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	isConnected = true
+	isConnected.Store(true)
 	go monitorConnection()
 
-	h := handler.New(cfg, logMasker, tracer)
+	h = handler.New(cfg, logMasker, tracer)
 
 	for i := 0; i < cfg.WorkerCount; i++ {
 		workerWg.Add(1)
 		go startWorker(i)
 	}
 
-	httpHandler := withAuth(withRateLimit(h.HandleLogs))
-	http.HandleFunc("/logs", httpHandler)
-	http.HandleFunc("/health", h.HandleHealth)
-	http.Handle("/metrics", promhttp.Handler())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/logs", withAuth(withRateLimit(h.HandleLogs)))
+	mux.HandleFunc("/health", h.HandleHealth)
+	mux.HandleFunc("/dlq", h.HandleDLQ)
+	mux.Handle("/metrics", promhttp.Handler())
 
 	srv := &http.Server{
 		Addr:         cfg.ServerAddr,
-		Handler:      nil,
+		Handler:      mux,
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	go func() {
@@ -160,6 +173,14 @@ func main() {
 
 	slog.Info("shutting down...")
 	close(shutdownCh)
+
+	slog.Info("stopping HTTP server, allowing in-flight requests to complete...")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		slog.Warn("server shutdown error", "error", err)
+	}
 
 	workerWg.Wait()
 
@@ -186,7 +207,7 @@ func monitorConnection() {
 
 		if err := chClient.Ping(context.Background()); err != nil {
 			slog.Warn("clickhouse connection lost, reconnecting...")
-			isConnected = false
+			isConnected.Store(false)
 
 			var newClient *clickhouse.Client
 			var err error
@@ -203,7 +224,7 @@ func monitorConnection() {
 				})
 				if err == nil {
 					chClient = newClient
-					isConnected = true
+					isConnected.Store(true)
 					slog.Info("successfully reconnected to ClickHouse")
 					break
 				}
@@ -211,7 +232,7 @@ func monitorConnection() {
 				time.Sleep(time.Duration(i+1) * time.Second)
 			}
 
-			if !isConnected {
+			if !isConnected.Load() {
 				slog.Error("failed to reconnect to ClickHouse after all retries")
 				return
 			}
@@ -222,8 +243,10 @@ func monitorConnection() {
 func withRateLimit(fn http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !limiter.Allow() {
-			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 			metricsLogsReceived.WithLabelValues("rate_limited").Inc()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprintf(w, `{"success":false,"error":{"code":"RATE_LIMITED","message":"Rate limit exceeded"}}`)
 			return
 		}
 		fn(w, r)
@@ -244,7 +267,9 @@ func withAuth(fn http.HandlerFunc) http.HandlerFunc {
 
 		if providedKey != cfg.APIKey {
 			slog.Warn("unauthorized access attempt", "ip", r.RemoteAddr)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprintf(w, `{"success":false,"error":{"code":"UNAUTHORIZED","message":"Invalid API key"}}`)
 			return
 		}
 
@@ -296,8 +321,18 @@ func insertBatchWithRetry(logs []handler.ProcessedLog) {
 			time.Sleep(cfg.RetryInterval * time.Duration(i+1))
 		}
 	}
+
 	slog.Error("all insert attempts failed", "count", len(logs), "error", lastErr)
 	metricsLogsInserted.WithLabelValues("failed").Add(float64(len(logs)))
+
+	for _, l := range logs {
+		handler.AddToDLQ(handler.FailedLog{
+			ID:        l.ID,
+			Timestamp: time.Now(),
+			Retries:   cfg.MaxRetries,
+		})
+	}
+	metricsDLQSize.Add(float64(len(logs)))
 }
 
 func insertBatch(logs []handler.ProcessedLog) error {
@@ -305,7 +340,7 @@ func insertBatch(logs []handler.ProcessedLog) error {
 		return nil
 	}
 
-	if !isConnected {
+	if !isConnected.Load() {
 		return fmt.Errorf("clickhouse not connected")
 	}
 
@@ -343,6 +378,10 @@ func insertBatch(logs []handler.ProcessedLog) error {
 	metricsBatchSize.Observe(float64(len(entries)))
 	metricsInsertDuration.Observe(time.Since(startTime).Seconds())
 
-	slog.Info("batch inserted", "count", len(entries), "duration_ms", time.Since(startTime).Milliseconds())
+	slog.Info("batch inserted",
+		"count", len(entries),
+		"duration_ms", time.Since(startTime).Milliseconds(),
+	)
+
 	return nil
 }

@@ -120,14 +120,51 @@ func TestHandleHealth(t *testing.T) {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
 
-	var resp map[string]interface{}
+	var resp handler.Response
 	json.Unmarshal(rr.Body.Bytes(), &resp)
 
-	if resp["status"] != "healthy" {
-		t.Errorf("expected status 'healthy', got '%v'", resp["status"])
+	if !resp.Success {
+		t.Errorf("expected success true")
 	}
 
-	if resp["ingestor_id"] != "test-123" {
-		t.Errorf("expected ingestor_id 'test-123', got '%v'", resp["ingestor_id"])
+	if resp.RequestID == "" {
+		t.Errorf("expected request_id to be set")
+	}
+
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Errorf("expected data to be map")
+		return
+	}
+
+	if data["status"] != "healthy" {
+		t.Errorf("expected status 'healthy', got '%v'", data["status"])
+	}
+
+	if data["ingestor_id"] != "test-123" {
+		t.Errorf("expected ingestor_id 'test-123', got '%v'", data["ingestor_id"])
+	}
+}
+
+func TestDLQEndpoint(t *testing.T) {
+	cfg := &config.Config{ClusterName: "test"}
+	m := masker.New(false)
+	tracer, _ := tracing.NewTracer(tracing.TracerConfig{Enabled: false})
+	h := handler.New(cfg, m, tracer)
+
+	req := httptest.NewRequest(http.MethodGet, "/dlq", nil)
+	rr := httptest.NewRecorder()
+
+	h.HandleDLQ(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var resp handler.Response
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+
+	if !resp.Success {
+		t.Errorf("expected success true")
 	}
 }

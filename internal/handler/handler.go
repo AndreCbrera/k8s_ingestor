@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 
 	"k8s_ingestor/internal/config"
@@ -17,11 +18,24 @@ import (
 	"k8s_ingestor/internal/tracing"
 )
 
+const (
+	ErrCodeInvalidJSON        = "INVALID_JSON"
+	ErrCodeEmptyBody          = "EMPTY_BODY"
+	ErrCodeRateLimited        = "RATE_LIMITED"
+	ErrCodeUnauthorized       = "UNAUTHORIZED"
+	ErrCodeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
+	ErrCodeInternalError      = "INTERNAL_ERROR"
+	ErrCodeServiceUnavailable = "SERVICE_UNAVAILABLE"
+)
+
 type Handler struct {
 	cfg    *config.Config
 	masker *masker.Masker
 	tracer *tracing.Tracer
 }
+
+var dlqChan chan FailedLog
+var queueStatsFunc func() (int, int)
 
 type FluentBitLog struct {
 	Log        string `json:"log"`
@@ -40,9 +54,39 @@ type FluentBitLog struct {
 	SpanID  string `json:"span_id,omitempty"`
 }
 
+type FailedLog struct {
+	ID        string       `json:"id"`
+	Log       FluentBitLog `json:"original_log"`
+	Error     string       `json:"error"`
+	Timestamp time.Time    `json:"timestamp"`
+	Retries   int          `json:"retries"`
+}
+
+type Response struct {
+	Success   bool        `json:"success"`
+	RequestID string      `json:"request_id"`
+	Timestamp string      `json:"timestamp"`
+	Data      interface{} `json:"data,omitempty"`
+	Error     *ErrorInfo  `json:"error,omitempty"`
+}
+
+type ErrorInfo struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+type LogsResponse struct {
+	Accepted int      `json:"accepted"`
+	Rejected int      `json:"rejected"`
+	LogIDs   []string `json:"log_ids"`
+	Queued   int      `json:"queued"`
+}
+
 var logLevelRegex = regexp.MustCompile(`(?i)\b(ERROR|WARN|WARNING|INFO|DEBUG|TRACE|FATAL|CRITICAL)\b`)
 
 func New(cfg *config.Config, m *masker.Masker, t *tracing.Tracer) *Handler {
+	dlqChan = make(chan FailedLog, 10000)
 	return &Handler{
 		cfg:    cfg,
 		masker: m,
@@ -51,25 +95,27 @@ func New(cfg *config.Config, m *masker.Masker, t *tracing.Tracer) *Handler {
 }
 
 func (h *Handler) HandleLogs(w http.ResponseWriter, r *http.Request) {
+	requestID := h.getOrGenerateRequestID(r)
 	ctx, span := h.tracer.StartSpan(r.Context(), "handle_logs")
 	defer span.End()
+
+	span.SetAttributes(attribute.String("request_id", requestID))
 
 	start := time.Now()
 
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		h.sendError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "Method not allowed", "", requestID)
 		return
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		slog.Error("failed to read body", "error", err)
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		h.sendError(w, http.StatusBadRequest, ErrCodeInternalError, "Failed to read request body", err.Error(), requestID)
 		return
 	}
 
 	if len(body) == 0 {
-		http.Error(w, "Empty body", http.StatusBadRequest)
+		h.sendError(w, http.StatusBadRequest, ErrCodeEmptyBody, "Empty request body", "", requestID)
 		return
 	}
 
@@ -77,34 +123,44 @@ func (h *Handler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &logs); err != nil {
 		var single FluentBitLog
 		if err := json.Unmarshal(body, &single); err != nil {
-			slog.Error("decode error", "error", err)
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			h.sendError(w, http.StatusBadRequest, ErrCodeInvalidJSON, "Invalid JSON format", err.Error(), requestID)
 			return
 		}
 		logs = []FluentBitLog{single}
 	}
 
 	entries := make([]ProcessedLog, 0, len(logs))
+	logIDs := make([]string, 0, len(logs))
+	rejected := 0
+
 	for _, l := range logs {
 		if entry := h.processLog(ctx, l); entry != nil {
+			entry.ID = uuid.New().String()
 			entries = append(entries, *entry)
+			logIDs = append(logIDs, entry.ID)
+		} else {
+			rejected++
 		}
 	}
 
-	span.SetAttributes(attribute.Int("logs_count", len(entries)))
+	span.SetAttributes(
+		attribute.Int("logs_accepted", len(entries)),
+		attribute.Int("logs_rejected", rejected),
+		attribute.String("request_id", requestID),
+	)
 
 	slog.Info("processed logs",
-		"count", len(entries),
+		"request_id", requestID,
+		"accepted", len(entries),
+		"rejected", rejected,
 		"duration_ms", time.Since(start).Milliseconds(),
 	)
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "ok",
-		"count":  len(entries),
-		"metrics": map[string]interface{}{
-			"duration_ms": time.Since(start).Milliseconds(),
-		},
+	h.sendSuccess(w, http.StatusOK, requestID, LogsResponse{
+		Accepted: len(entries),
+		Rejected: rejected,
+		LogIDs:   logIDs,
+		Queued:   len(entries),
 	})
 }
 
@@ -162,7 +218,149 @@ func (h *Handler) processLog(ctx context.Context, l FluentBitLog) *ProcessedLog 
 	return &entry
 }
 
+func (h *Handler) HandleDLQ(w http.ResponseWriter, r *http.Request) {
+	requestID := h.getOrGenerateRequestID(r)
+
+	if r.Method == http.MethodGet {
+		h.getDLQStats(w, requestID)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		h.retryDLQ(w, r, requestID)
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		h.flushDLQ(w, requestID)
+		return
+	}
+
+	h.sendError(w, http.StatusMethodNotAllowed, ErrCodeMethodNotAllowed, "Method not allowed", "", requestID)
+}
+
+func (h *Handler) getDLQStats(w http.ResponseWriter, requestID string) {
+	h.sendSuccess(w, http.StatusOK, requestID, map[string]interface{}{
+		"dlq_size":     len(dlqChan),
+		"dlq_capacity": cap(dlqChan),
+	})
+}
+
+func (h *Handler) retryDLQ(w http.ResponseWriter, r *http.Request, requestID string) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.sendError(w, http.StatusBadRequest, ErrCodeInternalError, "Failed to read body", err.Error(), requestID)
+		return
+	}
+
+	var logIDs []string
+	if err := json.Unmarshal(body, &logIDs); err != nil {
+		h.sendError(w, http.StatusBadRequest, ErrCodeInvalidJSON, "Invalid JSON", err.Error(), requestID)
+		return
+	}
+
+	retried := 0
+	for range logIDs {
+		select {
+		case failed := <-dlqChan:
+			dlqChan <- failed
+			retried++
+		default:
+			break
+		}
+	}
+
+	h.sendSuccess(w, http.StatusOK, requestID, map[string]interface{}{
+		"retried": retried,
+	})
+}
+
+func (h *Handler) flushDLQ(w http.ResponseWriter, requestID string) {
+	flushed := 0
+	for {
+		select {
+		case <-dlqChan:
+			flushed++
+		default:
+			goto done
+		}
+	}
+done:
+
+	h.sendSuccess(w, http.StatusOK, requestID, map[string]interface{}{
+		"flushed": flushed,
+	})
+}
+
+func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
+	requestID := h.getOrGenerateRequestID(r)
+
+	resp := map[string]interface{}{
+		"status":      "healthy",
+		"ingestor_id": h.cfg.IngestorID,
+		"request_id":  requestID,
+		"timestamp":   time.Now().Format(time.RFC3339),
+		"queue_size":  len(logQueue),
+	}
+
+	h.sendSuccess(w, http.StatusOK, requestID, resp)
+}
+
+func (h *Handler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	http.DefaultServeMux.ServeHTTP(w, r)
+}
+
+func (h *Handler) getOrGenerateRequestID(r *http.Request) string {
+	requestID := r.Header.Get("X-Request-ID")
+	if requestID == "" {
+		requestID = uuid.New().String()
+	}
+	return requestID
+}
+
+func (h *Handler) sendSuccess(w http.ResponseWriter, status int, requestID string, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", requestID)
+	w.WriteHeader(status)
+
+	resp := Response{
+		Success:   true,
+		RequestID: requestID,
+		Timestamp: time.Now().Format(time.RFC3339Nano),
+		Data:      data,
+	}
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) sendError(w http.ResponseWriter, status int, code, message, detail, requestID string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", requestID)
+	w.WriteHeader(status)
+
+	resp := Response{
+		Success:   false,
+		RequestID: requestID,
+		Timestamp: time.Now().Format(time.RFC3339Nano),
+		Error: &ErrorInfo{
+			Code:    code,
+			Message: message,
+			Detail:  detail,
+		},
+	}
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+var logQueue chan ProcessedLog
+
+func SetLogQueue(q chan ProcessedLog) {
+	logQueue = q
+}
+
 type ProcessedLog struct {
+	ID          string
 	Timestamp   time.Time
 	Cluster     string
 	Namespace   string
@@ -236,20 +434,14 @@ func parseTimestamp(ts string) time.Time {
 	return time.Time{}
 }
 
-func (h *Handler) HandleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	resp := map[string]interface{}{
-		"status":      "healthy",
-		"ingestor_id": h.cfg.IngestorID,
-		"timestamp":   time.Now().Format(time.RFC3339),
+func AddToDLQ(failed FailedLog) {
+	select {
+	case dlqChan <- failed:
+	default:
+		slog.Warn("DLQ full, dropping failed log", "id", failed.ID)
 	}
-
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
 }
 
-func (h *Handler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	http.DefaultServeMux.ServeHTTP(w, r)
+func GetQueueStats() (int, int) {
+	return len(logQueue), cap(logQueue)
 }
