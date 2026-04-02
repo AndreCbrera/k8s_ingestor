@@ -1,0 +1,83 @@
+# Binaries and executables
+app
+/k8s-ingestor
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Go
+vendor/
+*.sum
+coverage.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+.settings/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+.envrc
+secrets.yaml
+*-secret.yaml
+credentials.json
+*.pem
+*.key
+*.crt
+*.csr
+
+# Logs
+*.log
+logs/
+debug.log
+
+# Build and dist
+dist/
+build/
+bin/
+
+# Temporary
+tmp/
+temp/
+tmp.*
+*.tmp
+
+# Helm
+*.tgz
+
+
+# Terraform state (if any)
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Local development
+local/
+dev/
+test-local/
+
+# Downloaded tools
+bin/
+usr/local/bin/
+
+# Container
+.dockerignore
+
+# MkDocs
+site/

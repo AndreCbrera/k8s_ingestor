@@ -1,0 +1,18 @@
+apiVersion: v2
+name: k8s-ingestor
+description: Kubernetes Log Ingestor with Fluent Bit and ClickHouse
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - kubernetes
+  - logging
+  - fluent-bit
+  - clickhouse
+maintainers:
+  - name: DevOps Team
+    email: devops@example.com
+sources:
+  - https://github.com/example/k8s-ingestor
+annotations:
+  category: Observability

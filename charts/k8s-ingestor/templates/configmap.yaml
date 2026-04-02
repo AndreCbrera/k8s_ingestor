@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "k8s-ingestor.fullname" . }}
+  labels:
+    {{- include "k8s-ingestor.labels" . | nindent 4 }}
+data:
+  CLICKHOUSE_ADDR: {{ required "ClickHouse address is required" .Values.clickhouse.addr | quote }}
+  CLICKHOUSE_DATABASE: {{ .Values.clickhouse.database | quote }}
+  CLICKHOUSE_USERNAME: {{ .Values.clickhouse.username | quote }}
+  {{- if .Values.clickhouse.existingSecret }}
+  {{- else }}
+  CLICKHOUSE_PASSWORD: {{ required "ClickHouse password is required" .Values.clickhouse.password | quote }}
+  {{- end }}
+  BATCH_SIZE: {{ .Values.ingestor.batchSize | quote }}
+  FLUSH_INTERVAL_SEC: {{ .Values.ingestor.flushInterval | quote }}
+  WORKER_COUNT: {{ .Values.ingestor.workers | quote }}
+  QUEUE_SIZE: {{ .Values.ingestor.queueSize | quote }}
+  RATE_LIMIT_PER_SEC: {{ .Values.ingestor.rateLimitPerSec | quote }}
+  RATE_LIMIT_BURST: {{ .Values.ingestor.rateLimitBurst | quote }}
+  CLUSTER_NAME: {{ required "Cluster name is required" .Values.cluster.name | quote }}
+  SERVER_ADDR: {{ .Values.service.port | quote }}
+  {{- if .Values.ingestor.apiKey }}
+  API_KEY: {{ .Values.ingestor.apiKey | quote }}
+  {{- end }}
+  LOG_MASKING_ENABLED: {{ .Values.ingestor.logMasking | quote }}
+  {{- if .Values.tracing.enabled }}
+  OTEL_ENABLED: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.tracing.endpoint | quote }}
+  OTEL_SERVICE_NAME: {{ include "k8s-ingestor.fullname" . | quote }}
+  {{- end }}

@@ -3,6 +3,9 @@ kind: DaemonSet
 metadata:
   name: fluent-bit
   namespace: logging
+  labels:
+    app: fluent-bit
+    version: v1
 spec:
   selector:
     matchLabels:
@@ -11,15 +14,42 @@ spec:
     metadata:
       labels:
         app: fluent-bit
+        version: v1
     spec:
+      serviceAccountName: fluent-bit
+      terminationGracePeriodSeconds: 10
       containers:
         - name: fluent-bit
           image: fluent/fluent-bit:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 2020
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits:
+              cpu: 200m
+              memory: 200Mi
           volumeMounts:
             - name: varlog
               mountPath: /var/log
             - name: config
               mountPath: /fluent-bit/etc/
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 2020
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 2020
+            initialDelaySeconds: 5
+            periodSeconds: 5
       volumes:
         - name: varlog
           hostPath:

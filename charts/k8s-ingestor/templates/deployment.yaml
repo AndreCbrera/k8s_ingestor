@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k8s-ingestor.fullname" . }}
+  labels:
+    {{- include "k8s-ingestor.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "k8s-ingestor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+      labels:
+        {{- include "k8s-ingestor.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "k8s-ingestor.serviceAccountName" . }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.service.grpcPort }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          startupProbe:
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "k8s-ingestor.fullname" . }}
+            {{- if and (not .Values.clickhouse.existingSecret) .Values.clickhouse.password }}
+            - secretRef:
+                name: {{ include "k8s-ingestor.fullname" . }}-clickhouse
+            {{- end }}
+            {{- if .Values.clickhouse.existingSecret }}
+            - secretRef:
+                name: {{ .Values.clickhouse.existingSecret }}
+            {{- end }}
+          env:
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.clickhouse.existingSecret }}
+                  name: {{ .Values.clickhouse.existingSecret }}
+                  key: {{ .Values.clickhouse.existingSecretKey | default "password" }}
+                  {{- else }}
+                  name: {{ include "k8s-ingestor.fullname" . }}-clickhouse
+                  key: password
+                  {{- end }}
+          volumeMounts:
+            {{- if .Values.tls.enabled }}
+            - name: tls-certs
+              mountPath: /etc/tls
+              readOnly: true
+            {{- end }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 10 }}
+          {{- end }}
+      volumes:
+        {{- if .Values.tls.enabled }}
+        - name: tls-certs
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

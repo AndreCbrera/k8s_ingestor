@@ -1,0 +1,177 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-ingestor
+  namespace: logging
+  labels:
+    app: k8s-ingestor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-ingestor
+  template:
+    metadata:
+      labels:
+        app: k8s-ingestor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: k8s-ingestor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: ingestor
+          image: k8s-ingestor:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: CLICKHOUSE_ADDR
+              value: "clickhouse.clickhouse.svc.cluster.local:9000"
+            - name: CLICKHOUSE_DATABASE
+              value: "default"
+            - name: CLICKHOUSE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: clickhouse-credentials
+                  key: username
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: clickhouse-credentials
+                  key: password
+            - name: SERVER_ADDR
+              value: ":8080"
+            - name: BATCH_SIZE
+              value: "200"
+            - name: FLUSH_INTERVAL_SEC
+              value: "1"
+            - name: CLUSTER_NAME
+              value: "prod-cluster"
+            - name: MAX_RETRIES
+              value: "3"
+            - name: RATE_LIMIT_PER_SEC
+              value: "1000"
+            - name: RATE_LIMIT_BURST
+              value: "2000"
+            - name: WORKER_COUNT
+              value: "4"
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ingestor-api-key
+                  key: api-key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-ingestor
+  namespace: logging
+spec:
+  selector:
+    app: k8s-ingestor
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-ingestor
+  namespace: logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-ingestor
+  namespace: logging
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-ingestor
+  namespace: logging
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: k8s-ingestor
+subjects:
+  - kind: ServiceAccount
+    name: k8s-ingestor
+    namespace: logging
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: k8s-ingestor
+  namespace: logging
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: k8s-ingestor
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: External
+      external:
+        metric:
+          name: log_queue_size
+          selector:
+            matchLabels:
+              job: k8s-ingestor
+        target:
+          type: AverageValue
+          averageValue: "10000"

@@ -2,190 +2,347 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"io"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
-	"strings"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/time/rate"
+
+	"k8s_ingestor/internal/clickhouse"
+	"k8s_ingestor/internal/config"
+	"k8s_ingestor/internal/handler"
+	"k8s_ingestor/internal/masker"
+	"k8s_ingestor/internal/tracing"
 )
 
-type FluentBitLog struct {
-	Log string `json:"log"`
+var (
+	cfg         *config.Config
+	chClient    *clickhouse.Client
+	logMasker   *masker.Masker
+	tracer      *tracing.Tracer
+	limiter     *rate.Limiter
+	isConnected bool
+	workerWg    sync.WaitGroup
+	shutdownCh  chan struct{}
+	logQueue    chan handler.ProcessedLog
 
-	Kubernetes struct {
-		Namespace string `json:"namespace_name"`
-		Pod       string `json:"pod_name"`
-		Container string `json:"container_name"`
-	} `json:"kubernetes"`
+	metricsLogsReceived = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "logs_received_total",
+			Help: "Total number of logs received",
+		},
+		[]string{"status"},
+	)
+	metricsLogsInserted = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "logs_inserted_total",
+			Help: "Total number of logs inserted into ClickHouse",
+		},
+		[]string{"status"},
+	)
+	metricsBatchSize = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "batch_size",
+			Help:    "Size of batches sent to ClickHouse",
+			Buckets: prometheus.LinearBuckets(50, 50, 4),
+		},
+	)
+	metricsInsertDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "insert_duration_seconds",
+			Help:    "Time taken to insert batch into ClickHouse",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
+	metricsQueueSize = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "log_queue_size",
+			Help: "Current size of the log queue",
+		},
+	)
+)
+
+func init() {
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})
+	slog.SetDefault(slog.New(handler))
 }
-
-var conn clickhouse.Conn
-var logQueue = make(chan FluentBitLog, 10000)
 
 func main() {
-	var err error
+	prometheus.MustRegister(
+		metricsLogsReceived,
+		metricsLogsInserted,
+		metricsBatchSize,
+		metricsInsertDuration,
+		metricsQueueSize,
+	)
 
-	conn, err = clickhouse.Open(&clickhouse.Options{
-		Addr: []string{"127.0.0.1:9000"},
-		Auth: clickhouse.Auth{
-			Database: "default",
-			Username: "admin",
-			Password: "admin123",
-		},
-		MaxOpenConns: 20,
-		MaxIdleConns: 10,
-		DialTimeout:  5 * time.Second,
+	cfg = config.Load()
+	limiter = rate.NewLimiter(rate.Limit(cfg.RateLimitPerSec), cfg.RateLimitBurst)
+	shutdownCh = make(chan struct{})
+	logQueue = make(chan handler.ProcessedLog, cfg.QueueSize)
+
+	logMasker = masker.New(cfg.LogMasking)
+
+	tracer, _ = tracing.NewTracer(tracing.TracerConfig{
+		Enabled:     cfg.OtelEnabled,
+		Endpoint:    cfg.OtelEndpoint,
+		ServiceName: cfg.OtelServiceName,
+	})
+
+	slog.Info("starting k8s-ingestor",
+		"addr", cfg.ServerAddr,
+		"workers", cfg.WorkerCount,
+		"batch_size", cfg.BatchSize,
+		"flush_interval", cfg.FlushInterval,
+		"cluster", cfg.ClusterName,
+		"log_masking", cfg.LogMasking,
+		"tracing", cfg.OtelEnabled,
+	)
+
+	var err error
+	chClient, err = clickhouse.NewClient(clickhouse.Config{
+		Addr:            cfg.ClickHouseAddr,
+		Database:        cfg.ClickHouseDatabase,
+		Username:        cfg.ClickHouseUsername,
+		Password:        cfg.ClickHousePassword,
+		MaxOpenConns:    cfg.MaxOpenConns,
+		MaxIdleConns:    cfg.MaxIdleConns,
+		DialTimeout:     cfg.DialTimeout,
+		ConnMaxLifetime: cfg.ConnMaxLifetime,
+		Compression:     "lz4",
 	})
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("failed to connect to ClickHouse", "error", err)
+		os.Exit(1)
 	}
 
-	if err := conn.Ping(context.Background()); err != nil {
-		log.Fatal("ClickHouse connection failed:", err)
+	isConnected = true
+	go monitorConnection()
+
+	h := handler.New(cfg, logMasker, tracer)
+
+	for i := 0; i < cfg.WorkerCount; i++ {
+		workerWg.Add(1)
+		go startWorker(i)
 	}
 
-	startWorker()
+	httpHandler := withAuth(withRateLimit(h.HandleLogs))
+	http.HandleFunc("/logs", httpHandler)
+	http.HandleFunc("/health", h.HandleHealth)
+	http.Handle("/metrics", promhttp.Handler())
 
-	http.HandleFunc("/logs", handleLogs)
-
-	log.Println("🚀 Server running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
-}
-
-func handleLogs(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	log.Println("📦 RAW:", string(body))
-
-	r.Body = io.NopCloser(strings.NewReader(string(body)))
-
-	var logs []FluentBitLog
-
-	if err := json.NewDecoder(r.Body).Decode(&logs); err != nil {
-		var single FluentBitLog
-		if err := json.NewDecoder(strings.NewReader(string(body))).Decode(&single); err != nil {
-			log.Println("❌ decode error:", err)
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		logs = []FluentBitLog{single}
+	srv := &http.Server{
+		Addr:         cfg.ServerAddr,
+		Handler:      nil,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
 	}
 
-	log.Println("📊 logs received:", len(logs))
-
-	for _, l := range logs {
-		logQueue <- l
-	}
-
-	w.WriteHeader(200)
-}
-
-func startWorker() {
 	go func() {
-		batch := make([]FluentBitLog, 0, 200)
-
-		for {
-			select {
-			case l := <-logQueue:
-				batch = append(batch, l)
-
-				if len(batch) >= 200 {
-					insertBatch(batch)
-					batch = batch[:0]
-				}
-
-			case <-time.After(1 * time.Second):
-				if len(batch) > 0 {
-					insertBatch(batch)
-					batch = batch[:0]
-				}
-			}
+		slog.Info("server listening", "addr", cfg.ServerAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server error", "error", err)
 		}
 	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	slog.Info("shutting down...")
+	close(shutdownCh)
+
+	workerWg.Wait()
+
+	if err := chClient.Close(); err != nil {
+		slog.Error("error closing ClickHouse client", "error", err)
+	}
+
+	if err := tracer.Shutdown(context.Background()); err != nil {
+		slog.Error("error shutting down tracer", "error", err)
+	}
+
+	slog.Info("shutdown complete")
 }
 
-func insertBatch(logs []FluentBitLog) {
+func monitorConnection() {
+	for {
+		select {
+		case <-shutdownCh:
+			return
+		default:
+		}
+
+		time.Sleep(10 * time.Second)
+
+		if err := chClient.Ping(context.Background()); err != nil {
+			slog.Warn("clickhouse connection lost, reconnecting...")
+			isConnected = false
+
+			var newClient *clickhouse.Client
+			var err error
+			for i := 0; i < cfg.MaxRetries; i++ {
+				newClient, err = clickhouse.NewClient(clickhouse.Config{
+					Addr:            cfg.ClickHouseAddr,
+					Database:        cfg.ClickHouseDatabase,
+					Username:        cfg.ClickHouseUsername,
+					Password:        cfg.ClickHousePassword,
+					MaxOpenConns:    cfg.MaxOpenConns,
+					MaxIdleConns:    cfg.MaxIdleConns,
+					DialTimeout:     cfg.DialTimeout,
+					ConnMaxLifetime: cfg.ConnMaxLifetime,
+				})
+				if err == nil {
+					chClient = newClient
+					isConnected = true
+					slog.Info("successfully reconnected to ClickHouse")
+					break
+				}
+				slog.Warn("reconnection attempt failed", "attempt", i+1, "error", err)
+				time.Sleep(time.Duration(i+1) * time.Second)
+			}
+
+			if !isConnected {
+				slog.Error("failed to reconnect to ClickHouse after all retries")
+				return
+			}
+		}
+	}
+}
+
+func withRateLimit(fn http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !limiter.Allow() {
+			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+			metricsLogsReceived.WithLabelValues("rate_limited").Inc()
+			return
+		}
+		fn(w, r)
+	}
+}
+
+func withAuth(fn http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if cfg.APIKey == "" {
+			fn(w, r)
+			return
+		}
+
+		providedKey := r.Header.Get("X-API-Key")
+		if providedKey == "" {
+			providedKey = r.URL.Query().Get("api_key")
+		}
+
+		if providedKey != cfg.APIKey {
+			slog.Warn("unauthorized access attempt", "ip", r.RemoteAddr)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		fn(w, r)
+	}
+}
+
+func startWorker(id int) {
+	defer workerWg.Done()
+
+	batch := make([]handler.ProcessedLog, 0, cfg.BatchSize)
+	ticker := time.NewTicker(cfg.FlushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-shutdownCh:
+			if len(batch) > 0 {
+				insertBatchWithRetry(batch)
+			}
+			return
+
+		case entry := <-logQueue:
+			batch = append(batch, entry)
+			metricsQueueSize.Set(float64(len(logQueue)))
+
+			if len(batch) >= cfg.BatchSize {
+				insertBatchWithRetry(batch)
+				batch = batch[:0]
+			}
+
+		case <-ticker.C:
+			if len(batch) > 0 {
+				insertBatchWithRetry(batch)
+				batch = batch[:0]
+			}
+		}
+	}
+}
+
+func insertBatchWithRetry(logs []handler.ProcessedLog) {
+	var lastErr error
+	for i := 0; i < cfg.MaxRetries; i++ {
+		if err := insertBatch(logs); err == nil {
+			return
+		} else {
+			lastErr = err
+			slog.Warn("insert attempt failed", "attempt", i+1, "error", err)
+			time.Sleep(cfg.RetryInterval * time.Duration(i+1))
+		}
+	}
+	slog.Error("all insert attempts failed", "count", len(logs), "error", lastErr)
+	metricsLogsInserted.WithLabelValues("failed").Add(float64(len(logs)))
+}
+
+func insertBatch(logs []handler.ProcessedLog) error {
 	if len(logs) == 0 {
-		return
+		return nil
 	}
 
-	batch, err := conn.PrepareBatch(context.Background(), `
-		INSERT INTO logs 
-		(timestamp, cluster, namespace, pod, container, level, message, labels)
-	`)
-	if err != nil {
-		log.Println("❌ prepare error:", err)
-		return
+	if !isConnected {
+		return fmt.Errorf("clickhouse not connected")
 	}
 
-	now := time.Now()
-	count := 0
-
+	entries := make([]clickhouse.LogEntry, 0, len(logs))
 	for _, l := range logs {
-		msg := cleanMessage(l.Log)
-		level := detectLevel(msg)
-
-		// 🔥 IMPORTANTE: fallback si no hay metadata
-		namespace := l.Kubernetes.Namespace
-		pod := l.Kubernetes.Pod
-		container := l.Kubernetes.Container
-
-		if namespace == "" {
-			namespace = "unknown"
-		}
-		if pod == "" {
-			pod = "unknown"
-		}
-		if container == "" {
-			container = "unknown"
-		}
-
-		err := batch.Append(
-			now,
-			"dev-cluster",
-			namespace,
-			pod,
-			container,
-			level,
-			msg,
-			map[string]string{},
-		)
-		if err != nil {
-			log.Println("❌ append error:", err)
-			continue
-		}
-
-		count++
+		entries = append(entries, clickhouse.LogEntry{
+			Timestamp:   l.Timestamp,
+			Cluster:     l.Cluster,
+			Namespace:   l.Namespace,
+			Pod:         l.Pod,
+			Container:   l.Container,
+			Level:       l.Level,
+			Message:     l.Message,
+			Labels:      l.Labels,
+			Annotations: l.Annotations,
+			NodeName:    l.NodeName,
+			HostIP:      l.HostIP,
+			PodIP:       l.PodIP,
+			TraceID:     l.TraceID,
+			SpanID:      l.SpanID,
+			ProcessedAt: l.ProcessedAt,
+			IngestorID:  l.IngestorID,
+		})
 	}
 
-	log.Println("📦 inserting:", count)
+	startTime := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	if err := batch.Send(); err != nil {
-		log.Println("❌ send error:", err)
-		return
+	if err := chClient.InsertBatch(ctx, entries); err != nil {
+		return fmt.Errorf("insert batch: %w", err)
 	}
 
-	log.Println("✅ batch inserted")
-}
+	metricsLogsInserted.WithLabelValues("success").Add(float64(len(entries)))
+	metricsBatchSize.Observe(float64(len(entries)))
+	metricsInsertDuration.Observe(time.Since(startTime).Seconds())
 
-func cleanMessage(msg string) string {
-	parts := strings.SplitN(msg, " ", 4)
-	if len(parts) == 4 {
-		return parts[3]
-	}
-	return msg
-}
-
-func detectLevel(msg string) string {
-	msg = strings.ToLower(msg)
-
-	if strings.Contains(msg, "error") {
-		return "error"
-	}
-	if strings.Contains(msg, "warn") {
-		return "warn"
-	}
-	return "info"
+	slog.Info("batch inserted", "count", len(entries), "duration_ms", time.Since(startTime).Milliseconds())
+	return nil
 }

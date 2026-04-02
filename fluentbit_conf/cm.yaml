@@ -6,8 +6,9 @@ metadata:
 data:
   fluent-bit.conf: |
     [SERVICE]
-        Flush        1
-        Log_Level    info
+        Flush           1
+        Log_Level       info
+        Parsers_File    parsers.conf
 
     [INPUT]
         Name              tail
@@ -15,19 +16,50 @@ data:
         Parser            cri
         Tag               kube.*
         Refresh_Interval  5
+        DB                /var/log/flb.db
+        Mem_Buf_Limit     50MB
 
     [FILTER]
         Name                kubernetes
         Match               kube.*
-        Kube_Tag_Prefix     kube.var.log.containers.
+        Kube_URL            https://kubernetes.default.svc:443
+        Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
         Merge_Log           On
         Keep_Log            Off
-        Kube_URL            https://kubernetes.default.svc:443
+
+    [FILTER]
+        Name                lua
+        Match               kube.*
+        Script              filter.lua
+        call                filter
 
     [OUTPUT]
-        Name  http
-        Match *
-        Host  host.docker.internal
-        Port  8080
-        URI   /logs
-        Format json
+        Name                http
+        Match               *
+        Host                host.docker.internal
+        Port                8080
+        URI                 /logs
+        Format              json
+        Json_Date_Format    iso8601
+        Retry_Limit         3
+
+  parsers.conf: |
+    [PARSER]
+        Name        cri
+        Format      regex
+        Regex       ^(?<time>[^ ]+) (?<stream>[^ ]+) (?<logtag>[^ ]*) (?<log>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+        Time_Keep   On
+
+  filter.lua: |
+    function filter(tag, timestamp, record)
+      if record and record["kubernetes"] then
+        local ns = record["kubernetes"]["namespace_name"]
+        if ns == "clickhouse-operator" or ns == "kube-system" or ns == "logging" then
+          return -1, 0, 0
+        end
+      end
+      return 1, timestamp, record
+    end

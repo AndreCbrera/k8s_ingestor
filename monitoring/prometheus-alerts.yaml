@@ -1,0 +1,74 @@
+groups:
+  - name: k8s-ingestor
+    rules:
+      - alert: IngestorDown
+        expr: up{job="k8s-ingestor"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "K8s Log Ingestor is down"
+          description: "The log ingestor service has been down for more than 1 minute."
+
+      - alert: IngestorHighQueueSize
+        expr: log_queue_size > 15000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingestor queue is filling up"
+          description: "Log queue size has been above 15000 for more than 5 minutes. Current size: {{ $value }}"
+
+      - alert: IngestorQueueFull
+        expr: log_queue_size > 19000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ingestor queue is almost full"
+          description: "Log queue size has been above 19000. Logs are being dropped. Current size: {{ $value }}"
+
+      - alert: IngestorHighErrorRate
+        expr: rate(logs_inserted_total{status="failed"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate in log insertion"
+          description: "More than 10% of batch inserts are failing. Error rate: {{ $value | printf \"%.2f\" }}/s"
+
+      - alert: IngestorNoLogsReceived
+        expr: rate(logs_received_total{status="success"}[10m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No logs received in the last 10 minutes"
+          description: "The ingestor has not received any logs in the last 10 minutes. This might indicate Fluent Bit is not sending logs."
+
+      - alert: IngestorHighLatency
+        expr: histogram_quantile(0.95, sum(rate(insert_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High insert latency"
+          description: "95th percentile insert duration is above 5 seconds. Current p95: {{ $value | printf \"%.2f\" }}s"
+
+      - alert: IngestorClickHouseDisconnected
+        expr: absent(up{job="k8s-ingestor"}) or (sum(logs_inserted_total{status="failed"}) > 0 and sum(logs_inserted_total{status="success"}) == 0)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Cannot connect to ClickHouse"
+          description: "The ingestor cannot connect to ClickHouse. All inserts are failing."
+
+      - alert: IngestorRateLimitHit
+        expr: rate(logs_received_total{status="rate_limited"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limiting is active"
+          description: "The ingestor is rate limiting requests. Rate: {{ $value | printf \"%.2f\" }}/s"

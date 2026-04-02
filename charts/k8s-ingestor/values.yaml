@@ -1,0 +1,138 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/example/k8s-ingestor
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+cluster:
+  name: ""
+
+clickhouse:
+  addr: "clickhouse.clickhouse.svc.cluster.local:9000"
+  database: "default"
+  username: "admin"
+  password: ""
+  existingSecret: ""
+  existingSecretKey: "password"
+
+ingestor:
+  batchSize: 200
+  flushInterval: 1
+  workers: 4
+  queueSize: 50000
+  rateLimitPerSec: 1000
+  rateLimitBurst: 2000
+  apiKey: ""
+  logMasking: false
+
+service:
+  type: ClusterIP
+  port: 8080
+  grpcPort: 9090
+  annotations: {}
+
+probes:
+  liveness:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 30
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+serviceMonitor:
+  enabled: false
+  additionalLabels: {}
+  annotations: {}
+  interval: 30s
+  scrapeTimeout: 10s
+  namespaceSelector: {}
+  tlsConfig: {}
+
+tracing:
+  enabled: false
+  endpoint: "otel-collector.observability.svc.cluster.local:4317"
+
+tls:
+  enabled: false
+  secretName: ""
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

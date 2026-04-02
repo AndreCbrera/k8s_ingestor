@@ -1,0 +1,27 @@
+namespace: logging
+
+commonLabels:
+  app.kubernetes.io/name: k8s-ingestor
+  app.kubernetes.io/managed-by: Flux
+
+helmCharts:
+  - name: k8s-ingestor
+    version: "1.0.0"
+    repo: https://example.github.io/k8s-ingestor
+    releaseName: k8s-ingestor
+    namespace: logging
+
+configMapGenerator:
+  - name: k8s-ingestor-values
+    files:
+      - values.yaml=values.yaml
+
+patches:
+  - path: patches/ingestor-patch.yaml
+    target:
+      kind: Deployment
+      name: k8s-ingestor
+  - path: patches/resources-patch.yaml
+    target:
+      kind: Deployment
+      name: k8s-ingestor
