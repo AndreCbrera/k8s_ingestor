@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -145,11 +144,12 @@ func main() {
 		Compression:     "lz4",
 	})
 	if err != nil {
-		slog.Error("failed to connect to ClickHouse", "error", err)
-		os.Exit(1)
+		slog.Warn("failed to connect to ClickHouse, will retry in background", "error", err)
+		isConnected.Store(false)
+	} else {
+		isConnected.Store(true)
 	}
-
-	isConnected.Store(true)
+	handler.SetClickHouseClient(chClient)
 	go monitorConnection()
 
 	h = handler.New(cfg, logMasker, tracer)
@@ -163,6 +163,8 @@ func main() {
 		insertWg.Add(1)
 		go startInsertWorker(i)
 	}
+
+	slog.Info("workers started", "count", cfg.WorkerCount, "batch_size", cfg.BatchSize)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/logs", withAuth(withRateLimit(h.HandleLogs)))
@@ -206,8 +208,10 @@ func main() {
 
 	insertWg.Wait()
 
-	if err := chClient.Close(); err != nil {
-		slog.Error("error closing ClickHouse client", "error", err)
+	if chClient != nil {
+		if err := chClient.Close(); err != nil {
+			slog.Error("error closing ClickHouse client", "error", err)
+		}
 	}
 
 	if err := tracer.Shutdown(context.Background()); err != nil {
@@ -226,6 +230,27 @@ func monitorConnection() {
 		}
 
 		time.Sleep(10 * time.Second)
+
+		if chClient == nil {
+			newClient, err := clickhouse.NewClient(clickhouse.Config{
+				Addr:            cfg.ClickHouseAddr,
+				Database:        cfg.ClickHouseDatabase,
+				Username:        cfg.ClickHouseUsername,
+				Password:        cfg.ClickHousePassword,
+				MaxOpenConns:    cfg.MaxOpenConns,
+				MaxIdleConns:    cfg.MaxIdleConns,
+				DialTimeout:     cfg.DialTimeout,
+				ConnMaxLifetime: cfg.ConnMaxLifetime,
+			})
+			if err != nil {
+				slog.Warn("failed to connect to ClickHouse", "attempt", 1, "error", err)
+				continue
+			}
+			chClient = newClient
+			isConnected.Store(true)
+			slog.Info("connected to ClickHouse")
+			continue
+		}
 
 		if err := chClient.Ping(context.Background()); err != nil {
 			slog.Warn("clickhouse connection lost, reconnecting...")
@@ -302,62 +327,35 @@ func withAuth(fn http.HandlerFunc) http.HandlerFunc {
 func startWorker(id int) {
 	defer workerWg.Done()
 
-	batch := make([]handler.ProcessedLog, 0, cfg.BatchSize)
-	ticker := time.NewTicker(cfg.FlushInterval)
-	defer ticker.Stop()
-
-	flushBatch := func() {
-		if len(batch) == 0 {
-			return
-		}
-		b := batch
-		batch = batch[:0]
-
-		select {
-		case batchQueue <- b:
-			metricsQueueSize.Set(float64(len(logQueue)))
-		default:
-			slog.Warn("batch queue full, dropping batch", "size", len(b))
-			metricsLogsInserted.WithLabelValues("dropped").Add(float64(len(b)))
-		}
-	}
-
 	for {
 		select {
 		case <-shutdownCh:
-			flushBatch()
 			return
 
 		case entry := <-logQueue:
-			batch = append(batch, entry)
+			batch := []handler.ProcessedLog{entry}
+			select {
+			case batchQueue <- batch:
+			default:
+				slog.Warn("batch queue full, dropping log")
+			}
 			metricsQueueSize.Set(float64(len(logQueue)))
-
-			if len(batch) >= cfg.BatchSize {
-				flushBatch()
-			}
-
-		case <-ticker.C:
-			flushBatch()
-
-		case <-time.After(100 * time.Millisecond):
-			if len(batch) > 0 {
-				flushBatch()
-			}
-			runtime.Gosched()
 		}
 	}
 }
 
 func startInsertWorker(id int) {
 	defer insertWg.Done()
+	slog.Info("insert worker started", "worker_id", id)
 
 	for batch := range batchQueue {
 		if len(batch) == 0 {
 			continue
 		}
 
+		slog.Info("inserting batch", "worker_id", id, "size", len(batch))
 		metricsActiveInserts.Inc()
-		insertBatchAsync(batch)
+		insertBatchWithRetry(batch)
 		metricsActiveInserts.Dec()
 	}
 }
@@ -375,21 +373,13 @@ func insertBatchWithRetry(logs []handler.ProcessedLog) {
 			return
 		} else {
 			lastErr = err
-			slog.Warn("insert attempt failed", "attempt", i+1, "error", err)
-			time.Sleep(cfg.RetryInterval * time.Duration(i+1))
+			slog.Warn("insert failed", "attempt", i+1, "error", err)
+			time.Sleep(time.Second)
 		}
 	}
 
 	slog.Error("all insert attempts failed", "count", len(logs), "error", lastErr)
 	metricsLogsInserted.WithLabelValues("failed").Add(float64(len(logs)))
-
-	for range logs {
-		handler.AddToDLQ(handler.FailedLog{
-			Timestamp: time.Now(),
-			Retries:   cfg.MaxRetries,
-		})
-	}
-	metricsDLQSize.Add(float64(len(logs)))
 }
 
 func insertBatch(logs []handler.ProcessedLog) error {

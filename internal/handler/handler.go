@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 
+	"k8s_ingestor/internal/clickhouse"
 	"k8s_ingestor/internal/config"
 	"k8s_ingestor/internal/masker"
 	"k8s_ingestor/internal/tracing"
@@ -40,6 +41,7 @@ type Handler struct {
 var dlqChan chan FailedLog
 var queueStatsFunc func() (int, int)
 var logQueue chan ProcessedLog
+var chClient *clickhouse.Client
 
 var (
 	jsonBufferPool = sync.Pool{
@@ -172,6 +174,36 @@ func (h *Handler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Insert directly to ClickHouse
+	if chClient != nil && len(entries) > 0 {
+		chEntries := make([]clickhouse.LogEntry, 0, len(entries))
+		for _, e := range entries {
+			chEntries = append(chEntries, clickhouse.LogEntry{
+				Timestamp:   e.Timestamp,
+				Cluster:     e.Cluster,
+				Namespace:   e.Namespace,
+				Pod:         e.Pod,
+				Container:   e.Container,
+				Level:       e.Level,
+				Message:     e.Message,
+				Labels:      e.Labels,
+				Annotations: e.Annotations,
+				NodeName:    e.NodeName,
+				HostIP:      e.HostIP,
+				PodIP:       e.PodIP,
+				TraceID:     e.TraceID,
+				SpanID:      e.SpanID,
+				ProcessedAt: e.ProcessedAt,
+				IngestorID:  e.IngestorID,
+			})
+		}
+		if err := chClient.InsertBatch(ctx, chEntries); err != nil {
+			slog.Error("failed to insert batch", "error", err)
+		} else {
+			slog.Info("inserted directly", "count", len(chEntries))
+		}
+	}
+
 	span.SetAttributes(
 		attribute.Int("logs_accepted", len(entries)),
 		attribute.Int("logs_rejected", rejected),
@@ -183,6 +215,7 @@ func (h *Handler) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		"accepted", len(entries),
 		"rejected", rejected,
 		"duration_ms", time.Since(start).Milliseconds(),
+		"queue_len", len(logQueue),
 	)
 
 	h.sendSuccess(w, http.StatusOK, requestID, LogsResponse{
@@ -390,6 +423,10 @@ func (h *Handler) sendError(w http.ResponseWriter, status int, code, message, de
 
 func SetLogQueue(q chan ProcessedLog) {
 	logQueue = q
+}
+
+func SetClickHouseClient(c *clickhouse.Client) {
+	chClient = c
 }
 
 type ProcessedLog struct {
