@@ -45,9 +45,14 @@ func main() {
 }
 
 func serveUI(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" {
+	path := r.URL.Path
+	if path == "/" {
 		http.ServeFile(w, r, "web/pipeline/index.html")
 		return
 	}
-	http.ServeFile(w, r, "web/pipeline/"+r.URL.Path)
+	if path == "/dashboard" || path == "/dashboard/" {
+		http.ServeFile(w, r, "web/dashboard/index.html")
+		return
+	}
+	http.ServeFile(w, r, "web/pipeline/"+path)
 }
